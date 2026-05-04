@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/trezorg/totpcli/internal/provider"
 	"github.com/trezorg/totpcli/internal/search"
 	"github.com/trezorg/totpcli/internal/totpcode"
@@ -31,6 +32,30 @@ type Model struct {
 }
 
 type tickMsg time.Time
+
+type styleSchema struct {
+	search           lipgloss.Style
+	providerRow      lipgloss.Style
+	selectedProvider lipgloss.Style
+	codeLabel        lipgloss.Style
+	codeValue        lipgloss.Style
+	remaining        lipgloss.Style
+	empty            lipgloss.Style
+	help             lipgloss.Style
+	err              lipgloss.Style
+}
+
+var styles = styleSchema{
+	search:           lipgloss.NewStyle().Foreground(lipgloss.Color("81")),
+	providerRow:      lipgloss.NewStyle().Foreground(lipgloss.Color("252")),
+	selectedProvider: lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Bold(true),
+	codeLabel:        lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
+	codeValue:        lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true),
+	remaining:        lipgloss.NewStyle().Foreground(lipgloss.Color("220")),
+	empty:            lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true),
+	help:             lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
+	err:              lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true),
+}
 
 func NewModel(providers []provider.Provider, engine search.Engine, initialSearch string, generator Generator, now func() time.Time) Model {
 	input := textinput.New()
@@ -92,28 +117,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	var b strings.Builder
-	b.WriteString(m.input.View())
+	b.WriteString(styles.search.Render(m.input.View()))
 	b.WriteString("\n\n")
 
 	if len(m.filtered) == 0 {
-		b.WriteString("No providers found.\n")
+		b.WriteString(styles.empty.Render("No providers found."))
+		b.WriteString("\n")
 	} else {
 		for i, candidate := range m.filtered {
 			cursor := " "
 			if i == m.cursor {
 				cursor = ">"
 			}
-			fmt.Fprintf(&b, "%s %s\n", cursor, candidate.DisplayLabel())
+			row := fmt.Sprintf("%s %s", cursor, candidate.DisplayLabel())
+			if i == m.cursor {
+				b.WriteString(styles.selectedProvider.Render(row))
+			} else {
+				b.WriteString(styles.providerRow.Render(row))
+			}
+			b.WriteString("\n")
 		}
 	}
 
 	if m.err != nil {
-		fmt.Fprintf(&b, "\nError: %v\n", m.err)
+		fmt.Fprintf(&b, "\n%s\n", styles.err.Render(fmt.Sprintf("Error: %v", m.err)))
 	} else if m.code != "" && m.selected != nil {
-		fmt.Fprintf(&b, "\n%s\nCode: %s\nRemaining: %ds\n", m.selected.DisplayLabel(), m.code, m.remaining)
+		fmt.Fprintf(&b, "\n%s\n", styles.selectedProvider.Render(m.selected.DisplayLabel()))
+		fmt.Fprintf(&b, "%s %s\n", styles.codeLabel.Render("Code:"), styles.codeValue.Render(m.code))
+		fmt.Fprintf(&b, "%s\n", styles.remaining.Render(fmt.Sprintf("Remaining: %ds", m.remaining)))
 	}
 
-	b.WriteString("\nEnter selects. q quits.\n")
+	b.WriteString("\n")
+	b.WriteString(styles.help.Render("Enter selects. q quits."))
+	b.WriteString("\n")
 	return b.String()
 }
 

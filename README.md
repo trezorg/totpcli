@@ -10,9 +10,23 @@ go run ./cmd/totpcli --totp ~/totp.json --format json --search github
 
 Flags:
 
-- `--totp`: provider file path. Defaults to `~/totp.json`, or `~/totp.<format>` when `--format` is set.
+- `--totp`: provider file path. Defaults to `~/totp.json`, or `~/totp.<format>` when an explicit format is set.
 - `--format`: provider file format, one of `json`, `yaml`, or `toml`. When omitted, the format is detected from `.json`, `.yaml`, `.yml`, or `.toml`; unknown extensions use JSON.
 - `--search`: initial search text for the TUI filter.
+
+Cobra provides command help:
+
+```sh
+go run ./cmd/totpcli --help
+```
+
+Environment variables can provide defaults when the matching flag is omitted:
+
+- `TOTPCLI_TOTP_PATH`: provider file path fallback for `--totp`.
+- `TOTPCLI_FORMAT`: provider file format fallback for `--format`.
+- `TOTPCLI_SEARCH`: initial provider search fallback for `--search`.
+
+Command-line flags take precedence over environment variables. Environment variables take precedence over built-in defaults.
 
 ## Provider Files
 

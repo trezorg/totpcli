@@ -6,10 +6,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/trezorg/totpcli/internal/provider"
 	"github.com/trezorg/totpcli/internal/search"
 	"github.com/trezorg/totpcli/internal/totpcode"
 )
+
+func init() {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+}
 
 func TestNewModelInitializesSearchFromCLIValue(t *testing.T) {
 	t.Parallel()
@@ -45,6 +51,15 @@ func TestViewRendersProviderLabels(t *testing.T) {
 	}
 }
 
+func TestViewStylesProviderList(t *testing.T) {
+	t.Parallel()
+
+	view := newTestModel("").View()
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("View() missing ANSI styling:\n%s", view)
+	}
+}
+
 func TestSelectHighlightedProviderGeneratesCode(t *testing.T) {
 	t.Parallel()
 
@@ -67,6 +82,23 @@ func TestSelectHighlightedProviderGeneratesCode(t *testing.T) {
 	}
 }
 
+func TestViewStylesGeneratedCode(t *testing.T) {
+	t.Parallel()
+
+	model := newTestModel("")
+	model.Select()
+
+	view := model.View()
+	for _, want := range []string{"GitHub/trezorg", "Code:", "123456", "Remaining:", "17s"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q:\n%s", want, view)
+		}
+	}
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("View() missing ANSI styling:\n%s", view)
+	}
+}
+
 func TestSelectWithNoResultsDoesNotGenerateCode(t *testing.T) {
 	t.Parallel()
 
@@ -79,6 +111,21 @@ func TestSelectWithNoResultsDoesNotGenerateCode(t *testing.T) {
 	}
 	if generator.calls != 0 {
 		t.Fatalf("generator calls = %d, want 0", generator.calls)
+	}
+}
+
+func TestViewStylesEmptyResults(t *testing.T) {
+	t.Parallel()
+
+	model := newTestModel("")
+	model.SetSearch("missing")
+
+	view := model.View()
+	if !strings.Contains(view, "No providers found.") {
+		t.Fatalf("View() missing empty state:\n%s", view)
+	}
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("View() missing ANSI styling:\n%s", view)
 	}
 }
 
@@ -114,6 +161,21 @@ func TestGenerationErrorIsDisplayed(t *testing.T) {
 	}
 	if !strings.Contains(model.View(), "bad secret") {
 		t.Fatalf("View() missing error:\n%s", model.View())
+	}
+}
+
+func TestViewStylesGenerationError(t *testing.T) {
+	t.Parallel()
+
+	model := NewModel(sampleProviders(), search.Lexical{}, "", &stubGenerator{err: errors.New("bad secret")}, fixedNow)
+	model.Select()
+
+	view := model.View()
+	if !strings.Contains(view, "bad secret") {
+		t.Fatalf("View() missing error:\n%s", view)
+	}
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("View() missing ANSI styling:\n%s", view)
 	}
 }
 
