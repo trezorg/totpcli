@@ -8,6 +8,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/spf13/cobra"
 	"github.com/trezorg/totpcli/internal/provider"
 	"github.com/trezorg/totpcli/internal/search/digram"
@@ -27,6 +29,7 @@ type App struct {
 	Stderr          io.Writer
 	NewSearchEngine func(string, []provider.Provider) (tui.SearchEngine, error)
 	RunTUI          func(tui.Model) error
+	Now             func() time.Time
 }
 
 func (a App) Run(args []string) int {
@@ -37,6 +40,7 @@ func (a App) Run(args []string) int {
 	var format string
 	var initialSearch string
 	searchEngine := searchEngineDigram
+	var noTUI bool
 	exitCode := 0
 
 	cmd := &cobra.Command{
@@ -49,14 +53,20 @@ Environment variables:
   TOTPCLI_TOTP_PATH       provider file path fallback for --totp
   TOTPCLI_FORMAT          provider file format fallback for --format
   TOTPCLI_SEARCH          initial provider search fallback for --search
-  TOTPCLI_SEARCH_ENGINE   provider search engine fallback for --search-engine`,
+  TOTPCLI_SEARCH_ENGINE   provider search engine fallback for --search-engine
+  TOTPCLI_NO_TUI          non-interactive output fallback for --no-tui`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			effectivePath := effectiveString(cmd, "totp", totpPath, "TOTPCLI_TOTP_PATH")
 			effectiveFormat := effectiveString(cmd, "format", format, "TOTPCLI_FORMAT")
 			effectiveSearch := effectiveString(cmd, "search", initialSearch, "TOTPCLI_SEARCH")
 			effectiveSearchEngine := effectiveString(cmd, "search-engine", searchEngine, "TOTPCLI_SEARCH_ENGINE")
-			effectiveSearchEngine, err := parseSearchEngineName(effectiveSearchEngine)
+			effectiveNoTUI, err := effectiveBool(cmd, "no-tui", noTUI, "TOTPCLI_NO_TUI")
+			if err != nil {
+				exitCode = 2
+				return err
+			}
+			effectiveSearchEngine, err = parseSearchEngineName(effectiveSearchEngine)
 			if err != nil {
 				exitCode = 2
 				return err
@@ -88,6 +98,18 @@ Environment variables:
 				return err
 			}
 
+			now := a.Now
+			if now == nil {
+				now = time.Now
+			}
+			if effectiveNoTUI {
+				if err := printTokens(stdout, engine.Search(effectiveSearch), totpcode.Generator{}, now()); err != nil {
+					exitCode = 1
+					return err
+				}
+				return nil
+			}
+
 			model := tui.NewModel(providers, engine, effectiveSearch, totpcode.Generator{}, time.Now)
 			runTUI := a.RunTUI
 			if runTUI == nil {
@@ -108,6 +130,7 @@ Environment variables:
 	cmd.Flags().StringVar(&format, "format", "", "TOTP providers file format: json, yaml, or toml (env TOTPCLI_FORMAT)")
 	cmd.Flags().StringVar(&initialSearch, "search", "", "Initial provider search query (env TOTPCLI_SEARCH)")
 	cmd.Flags().StringVar(&searchEngine, "search-engine", searchEngineDigram, "Provider search engine: digram or lexical (env TOTPCLI_SEARCH_ENGINE)")
+	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "Print current tokens and exit without starting the TUI (env TOTPCLI_NO_TUI)")
 
 	if err := cmd.Execute(); err != nil {
 		if exitCode == 0 {
@@ -169,4 +192,49 @@ func effectiveString(cmd *cobra.Command, flagName string, flagValue string, envN
 		return value
 	}
 	return flagValue
+}
+
+func effectiveBool(cmd *cobra.Command, flagName string, flagValue bool, envName string) (bool, error) {
+	if cmd.Flags().Changed(flagName) {
+		return flagValue, nil
+	}
+	if value, ok := os.LookupEnv(envName); ok && value != "" {
+		return parseBoolEnv(envName, value)
+	}
+	return flagValue, nil
+}
+
+func parseBoolEnv(envName string, value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true, nil
+	case "0", "f", "false", "n", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unsupported boolean %q for %s: expected true or false", value, envName)
+	}
+}
+
+func printTokens(output io.Writer, providers []provider.Provider, generator totpcode.Generator, now time.Time) error {
+	if len(providers) == 0 {
+		return nil
+	}
+
+	rows := make([][]string, 0, len(providers))
+	for _, candidate := range providers {
+		result, err := generator.Generate(candidate, now)
+		if err != nil {
+			return err
+		}
+		rows = append(rows, []string{candidate.DisplayLabel(), result.Code, fmt.Sprintf("%ds", result.Remaining)})
+	}
+
+	tokenTable := table.New().
+		Border(lipgloss.ASCIIBorder()).
+		Headers("Provider", "Token", "Remaining").
+		Rows(rows...)
+	if _, err := fmt.Fprintln(output, tokenTable.Render()); err != nil {
+		return fmt.Errorf("write token output: %w", err)
+	}
+	return nil
 }

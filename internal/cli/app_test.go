@@ -2,13 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/trezorg/totpcli/internal/provider"
 	"github.com/trezorg/totpcli/internal/search/lexical"
+	"github.com/trezorg/totpcli/internal/totpcode"
 	"github.com/trezorg/totpcli/internal/tui"
 )
 
@@ -262,6 +265,86 @@ func TestRunDefaultSearchEngineIsDigram(t *testing.T) {
 	}
 }
 
+func TestRunNoTUIFlagSkipsTUI(t *testing.T) {
+	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		Now:    fixedNow,
+		RunTUI: func(tui.Model) error {
+			t.Fatal("RunTUI called in no-tui mode")
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"--totp", path, "--no-tui"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+}
+
+func TestRunUsesEnvironmentNoTUI(t *testing.T) {
+	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	t.Setenv("TOTPCLI_NO_TUI", "true")
+
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		Now:    fixedNow,
+		RunTUI: func(tui.Model) error {
+			t.Fatal("RunTUI called when TOTPCLI_NO_TUI enables no-tui mode")
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"--totp", path})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+}
+
+func TestRunNoTUIFlagOverridesDisabledEnvironment(t *testing.T) {
+	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	t.Setenv("TOTPCLI_NO_TUI", "false")
+
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		Now:    fixedNow,
+		RunTUI: func(tui.Model) error {
+			t.Fatal("RunTUI called when --no-tui overrides environment")
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"--totp", path, "--no-tui"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+}
+
+func TestRunReportsInvalidNoTUIEnvironmentBeforeLoadingProviders(t *testing.T) {
+	t.Setenv("TOTPCLI_NO_TUI", "sometimes")
+
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+	code := app.Run([]string{"--totp", filepath.Join(t.TempDir(), "missing.json")})
+	if code != 2 {
+		t.Fatalf("Run exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "unsupported boolean") {
+		t.Fatalf("stderr = %q, want unsupported boolean error", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "read provider file") {
+		t.Fatalf("stderr = %q, want validation before provider loading", stderr.String())
+	}
+}
+
 func TestRunUsesEnvironmentFormat(t *testing.T) {
 	path := writeProviderFile(t, `[[providers]]
 name = "trezorg"
@@ -341,10 +424,12 @@ func TestRunHelpListsFlagsAndEnvironment(t *testing.T) {
 		"--format",
 		"--search",
 		"--search-engine",
+		"--no-tui",
 		"TOTPCLI_TOTP_PATH",
 		"TOTPCLI_FORMAT",
 		"TOTPCLI_SEARCH",
 		"TOTPCLI_SEARCH_ENGINE",
+		"TOTPCLI_NO_TUI",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q:\n%s", want, help)
@@ -415,6 +500,136 @@ func TestRunReportsMissingProviderFile(t *testing.T) {
 	}
 }
 
+func TestRunNoTUIPrintsAllProviders(t *testing.T) {
+	path := writeProviderFile(t, twoProviderJSON(), "providers.json")
+
+	var stdout bytes.Buffer
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &stdout,
+		Stderr: &bytes.Buffer{},
+		Now:    fixedNow,
+	}
+
+	code := app.Run([]string{"--totp", path, "--no-tui"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+
+	assertTokenTable(t, stdout.String(), "GitHub/trezorg", "AWS")
+}
+
+func TestRunNoTUISearchPrintsFilteredProviders(t *testing.T) {
+	path := writeProviderFile(t, twoProviderJSON(), "providers.json")
+
+	var stdout bytes.Buffer
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &stdout,
+		Stderr: &bytes.Buffer{},
+		Now:    fixedNow,
+	}
+
+	code := app.Run([]string{"--totp", path, "--no-tui", "--search", "git"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+
+	assertTokenTable(t, stdout.String(), "GitHub/trezorg")
+	if strings.Contains(stdout.String(), "AWS") {
+		t.Fatalf("stdout = %q, want AWS filtered out", stdout.String())
+	}
+}
+
+func TestRunNoTUIEmptySearchPrintsNoTokenRows(t *testing.T) {
+	path := writeProviderFile(t, twoProviderJSON(), "providers.json")
+
+	var stdout bytes.Buffer
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &stdout,
+		Stderr: &bytes.Buffer{},
+		Now:    fixedNow,
+	}
+
+	code := app.Run([]string{"--totp", path, "--no-tui", "--search", "missing"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want empty output", stdout.String())
+	}
+}
+
+func TestRunNoTUIMatchedInvalidProviderFailsCommand(t *testing.T) {
+	path := writeProviderFile(t, `[
+  {
+    "name": "broken",
+    "issuer": "GitHub",
+    "algorithm": "SHA1",
+    "digits": "SIX",
+    "type": "TOTP",
+    "totpSecret": "not-base32"
+  }
+]`, "providers.json")
+
+	var stderr bytes.Buffer
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &stderr,
+		Now:    fixedNow,
+	}
+
+	code := app.Run([]string{"--totp", path, "--no-tui"})
+	if code == 0 {
+		t.Fatal("Run exit code = 0, want error")
+	}
+	if !strings.Contains(stderr.String(), "generate TOTP for GitHub/broken") {
+		t.Fatalf("stderr = %q, want generation error", stderr.String())
+	}
+}
+
+func TestRunNoTUIFilteredOutInvalidProviderDoesNotFailCommand(t *testing.T) {
+	path := writeProviderFile(t, `[
+  {
+    "name": "valid",
+    "issuer": "GitHub",
+    "algorithm": "SHA1",
+    "digits": "SIX",
+    "type": "TOTP",
+    "totpSecret": "JBSWY3DPEHPK3PXP"
+  },
+  {
+    "name": "broken",
+    "issuer": "AWS",
+    "algorithm": "SHA1",
+    "digits": "SIX",
+    "type": "TOTP",
+    "totpSecret": "not-base32"
+  }
+]`, "providers.json")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Now:    fixedNow,
+	}
+
+	code := app.Run([]string{"--totp", path, "--no-tui", "--search", "valid"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+
+	assertTokenTable(t, stdout.String(), "GitHub/valid")
+	if strings.Contains(stdout.String(), "AWS/broken") {
+		t.Fatalf("stdout = %q, want invalid provider filtered out", stdout.String())
+	}
+}
+
 func singleProviderJSON() string {
 	return `[
   {
@@ -426,6 +641,55 @@ func singleProviderJSON() string {
     "totpSecret": "JBSWY3DPEHPK3PXP"
   }
 ]`
+}
+
+func twoProviderJSON() string {
+	return `[
+  {
+    "name": "trezorg",
+    "issuer": "GitHub",
+    "algorithm": "SHA1",
+    "digits": "SIX",
+    "type": "TOTP",
+    "totpSecret": "JBSWY3DPEHPK3PXP"
+  },
+  {
+    "issuer": "AWS",
+    "algorithm": "SHA1",
+    "digits": "SIX",
+    "type": "TOTP",
+    "totpSecret": "JBSWY3DPEHPK3PXP"
+  }
+]`
+}
+
+func fixedNow() time.Time {
+	return time.Unix(1_700_000_025, 0)
+}
+
+func assertTokenTable(t *testing.T, output string, labels ...string) {
+	t.Helper()
+
+	result, err := totpcode.Generate(provider.Provider{
+		Issuer:     "Expected",
+		Algorithm:  provider.AlgorithmSHA1,
+		Digits:     6,
+		Type:       "TOTP",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	}, fixedNow())
+	if err != nil {
+		t.Fatalf("generate expected token: %v", err)
+	}
+	for _, want := range []string{"Provider", "Token", "Remaining", "+", "|", result.Code, fmt.Sprintf("%ds", result.Remaining)} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want table containing %q", output, want)
+		}
+	}
+	for _, label := range labels {
+		if !strings.Contains(output, label) {
+			t.Fatalf("stdout = %q, want provider label %q", output, label)
+		}
+	}
 }
 
 func assertLaunchedLabels(t *testing.T, model tui.Model, want []string) {

@@ -5,7 +5,7 @@ Define command parsing, environment variable configuration, precedence, and help
 ## Requirements
 
 ### Requirement: Cobra command parsing
-The CLI SHALL parse commands and flags through a Cobra root command named `totpcli`. The CLI SHALL preserve the existing `--totp`, `--format`, and `--search` flags and SHALL add a `--search-engine` flag.
+The CLI SHALL parse commands and flags through a Cobra root command named `totpcli`. The CLI SHALL preserve the existing `--totp`, `--format`, `--search`, and `--search-engine` flags and SHALL add a `--no-tui` flag.
 
 #### Scenario: Existing flags still launch the TUI
 - **WHEN** the user starts the application with `--totp /tmp/providers.json --format json --search git`
@@ -15,12 +15,16 @@ The CLI SHALL parse commands and flags through a Cobra root command named `totpc
 - **WHEN** the user starts the application with `--search-engine lexical`
 - **THEN** the CLI starts the TUI with lexical provider search
 
+#### Scenario: No TUI flag prints token output
+- **WHEN** the user starts the application with `--no-tui`
+- **THEN** the CLI loads providers and prints non-interactive token output instead of starting the TUI
+
 #### Scenario: Unknown flag reports a usage error
 - **WHEN** the user starts the application with an unsupported flag
 - **THEN** the CLI reports a command usage error and exits with a non-zero usage status
 
 ### Requirement: Environment variable configuration
-The CLI SHALL support `TOTPCLI_TOTP_PATH`, `TOTPCLI_FORMAT`, `TOTPCLI_SEARCH`, and `TOTPCLI_SEARCH_ENGINE` as environment variable fallbacks for provider path, provider format, initial search text, and provider search engine.
+The CLI SHALL support `TOTPCLI_TOTP_PATH`, `TOTPCLI_FORMAT`, `TOTPCLI_SEARCH`, `TOTPCLI_SEARCH_ENGINE`, and `TOTPCLI_NO_TUI` as environment variable fallbacks for provider path, provider format, initial search text, provider search engine, and non-interactive mode.
 
 #### Scenario: Provider path comes from environment
 - **WHEN** `TOTPCLI_TOTP_PATH` is set and the user does not provide `--totp`
@@ -33,6 +37,10 @@ The CLI SHALL support `TOTPCLI_TOTP_PATH`, `TOTPCLI_FORMAT`, `TOTPCLI_SEARCH`, a
 #### Scenario: Search engine comes from environment
 - **WHEN** `TOTPCLI_SEARCH_ENGINE` is set to `lexical` and the user does not provide `--search-engine`
 - **THEN** the CLI starts the TUI with lexical provider search
+
+#### Scenario: No TUI mode comes from environment
+- **WHEN** `TOTPCLI_NO_TUI` is set to a supported truthy value and the user does not provide `--no-tui`
+- **THEN** the CLI prints non-interactive token output instead of starting the TUI
 
 ### Requirement: Configuration precedence
 The CLI SHALL resolve configuration using command-line flags first, environment variables second, and built-in defaults third.
@@ -53,16 +61,24 @@ The CLI SHALL resolve configuration using command-line flags first, environment 
 - **WHEN** the user does not provide `--search-engine` and `TOTPCLI_SEARCH_ENGINE` is unset
 - **THEN** the CLI starts the TUI with digram provider search
 
+#### Scenario: No TUI flag overrides disabled environment value
+- **WHEN** `TOTPCLI_NO_TUI` is set to a supported falsy value and the user starts the application with `--no-tui`
+- **THEN** the CLI prints non-interactive token output instead of starting the TUI
+
+#### Scenario: Default mode starts TUI
+- **WHEN** the user does not provide `--no-tui` and `TOTPCLI_NO_TUI` is unset
+- **THEN** the CLI starts the TUI
+
 ### Requirement: Cobra help output
 The CLI SHALL provide Cobra-generated help output that documents available flags and related environment variables.
 
 #### Scenario: Help output lists supported flags
 - **WHEN** the user starts the application with `--help`
-- **THEN** the CLI prints help output that includes `--totp`, `--format`, `--search`, and `--search-engine`
+- **THEN** the CLI prints help output that includes `--totp`, `--format`, `--search`, `--search-engine`, and `--no-tui`
 
 #### Scenario: Help output lists environment variables
 - **WHEN** the user starts the application with `--help`
-- **THEN** the CLI help output includes `TOTPCLI_TOTP_PATH`, `TOTPCLI_FORMAT`, `TOTPCLI_SEARCH`, and `TOTPCLI_SEARCH_ENGINE`
+- **THEN** the CLI help output includes `TOTPCLI_TOTP_PATH`, `TOTPCLI_FORMAT`, `TOTPCLI_SEARCH`, `TOTPCLI_SEARCH_ENGINE`, and `TOTPCLI_NO_TUI`
 
 ### Requirement: Search engine configuration validation
 The CLI SHALL validate the resolved search engine name before loading the TUI. Supported values SHALL include `digram` and `lexical`.
