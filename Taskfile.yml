@@ -1,0 +1,49 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Run the full verification workflow.
+    cmds:
+      - task: all
+
+  test:
+    desc: Run the Go test suite with the race detector.
+    cmds:
+      - GOFLAGS= go test -v -race ./...
+
+  tidy:
+    desc: Tidy module dependencies.
+    cmds:
+      - go mod tidy
+
+  fix:
+    desc: Apply Go fixes and format source files.
+    cmds:
+      - go fix ./...
+      - gofmt -w ./
+
+  lint:
+    desc: Run formatting checks, vet, and golangci-lint.
+    cmds:
+      - go fix -diff ./...
+      - gofmt -d -l ./
+      - go vet ./...
+      - golangci-lint run
+
+  build:
+    desc: Build the Linux CLI binary.
+    cmds:
+      - CGO_ENABLED=0 GOOS=linux go build -a ./cmd/totpcli/...
+
+  install:
+    desc: Install the CLI into GOBIN or GOPATH/bin.
+    cmds:
+      - go install ./cmd/totpcli
+
+  all:
+    desc: Run fix, tidy, lint, and test.
+    cmds:
+      - task: fix
+      - task: tidy
+      - task: lint
+      - task: test

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,7 +76,7 @@ func NewModel(providers []provider.Provider, engine SearchEngine, initialSearch 
 	}
 
 	model := Model{
-		providers: append([]provider.Provider(nil), providers...),
+		providers: slices.Clone(providers),
 		engine:    engine,
 		input:     input,
 		generator: generator,
@@ -167,7 +168,7 @@ func (m Model) SearchValue() string {
 }
 
 func (m Model) Filtered() []provider.Provider {
-	return append([]provider.Provider(nil), m.filtered...)
+	return slices.Clone(m.filtered)
 }
 
 func (m *Model) MoveDown() {
@@ -188,7 +189,7 @@ func (m *Model) Select() bool {
 	}
 
 	selected := m.filtered[m.cursor]
-	m.selected = &selected
+	m.selected = new(selected)
 	m.Refresh()
 	return true
 }

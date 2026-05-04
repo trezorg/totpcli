@@ -46,7 +46,6 @@ func TestGenerateSupportsSHA256SHA512AndEightDigits(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -92,8 +91,6 @@ func TestRemainingSeconds(t *testing.T) {
 	}
 
 	for epoch, want := range tests {
-		epoch := epoch
-		want := want
 		t.Run(strconv.FormatInt(epoch, 10), func(t *testing.T) {
 			t.Parallel()
 

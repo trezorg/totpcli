@@ -70,8 +70,6 @@ func TestResolveOptionsDetectsFormatFromExtension(t *testing.T) {
 	}
 
 	for path, want := range tests {
-		path := path
-		want := want
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 
@@ -101,7 +99,6 @@ func TestLoadParsesJSONYAMLandTOML(t *testing.T) {
 	files := []string{"providers.json", "providers.yaml", "providers.toml"}
 
 	for _, name := range files {
-		name := name
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -178,7 +175,6 @@ func TestDisplayLabelFallsBackToSingleAvailableField(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 

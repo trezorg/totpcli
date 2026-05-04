@@ -1,6 +1,7 @@
 package lexical
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/trezorg/totpcli/internal/provider"
@@ -11,13 +12,13 @@ type Engine struct {
 }
 
 func New(providers []provider.Provider) Engine {
-	return Engine{providers: append([]provider.Provider(nil), providers...)}
+	return Engine{providers: slices.Clone(providers)}
 }
 
 func (e Engine) Search(query string) []provider.Provider {
 	query = normalize(query)
 	if query == "" {
-		return append([]provider.Provider(nil), e.providers...)
+		return slices.Clone(e.providers)
 	}
 
 	results := make([]provider.Provider, 0, len(e.providers))

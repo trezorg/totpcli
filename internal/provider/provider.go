@@ -110,7 +110,8 @@ func ExpandHome(path string, home string) (string, error) {
 	if path == "~" {
 		return home, nil
 	}
-	return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+	rest, _ := strings.CutPrefix(path, "~/")
+	return filepath.Join(home, rest), nil
 }
 
 func Load(path string, format Format) ([]Provider, error) {

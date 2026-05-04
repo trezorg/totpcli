@@ -1,6 +1,7 @@
 package digram
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/trezorg/totpcli/internal/provider"
@@ -18,7 +19,7 @@ type node struct {
 
 func New(providers []provider.Provider) Engine {
 	engine := Engine{
-		providers: append([]provider.Provider(nil), providers...),
+		providers: slices.Clone(providers),
 		root:      newNode(),
 	}
 	for index, candidate := range engine.providers {
@@ -32,7 +33,7 @@ func New(providers []provider.Provider) Engine {
 func (e Engine) Search(query string) []provider.Provider {
 	query = normalize(query)
 	if query == "" {
-		return append([]provider.Provider(nil), e.providers...)
+		return slices.Clone(e.providers)
 	}
 
 	node := e.root
