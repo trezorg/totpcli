@@ -15,10 +15,11 @@ import (
 )
 
 type App struct {
-	Home   string
-	Stdout io.Writer
-	Stderr io.Writer
-	RunTUI func(tui.Model) error
+	Home            string
+	Stdout          io.Writer
+	Stderr          io.Writer
+	NewSearchEngine func(string, []provider.Provider) (search.Engine, error)
+	RunTUI          func(tui.Model) error
 }
 
 func (a App) Run(args []string) int {
@@ -28,6 +29,7 @@ func (a App) Run(args []string) int {
 	var totpPath string
 	var format string
 	var initialSearch string
+	searchEngine := search.EngineDigram
 	exitCode := 0
 
 	cmd := &cobra.Command{
@@ -37,14 +39,21 @@ func (a App) Run(args []string) int {
 and shows generated TOTP codes for the selected provider.
 
 Environment variables:
-  TOTPCLI_TOTP_PATH  provider file path fallback for --totp
-  TOTPCLI_FORMAT     provider file format fallback for --format
-  TOTPCLI_SEARCH     initial provider search fallback for --search`,
+  TOTPCLI_TOTP_PATH       provider file path fallback for --totp
+  TOTPCLI_FORMAT          provider file format fallback for --format
+  TOTPCLI_SEARCH          initial provider search fallback for --search
+  TOTPCLI_SEARCH_ENGINE   provider search engine fallback for --search-engine`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			effectivePath := effectiveString(cmd, "totp", totpPath, "TOTPCLI_TOTP_PATH")
 			effectiveFormat := effectiveString(cmd, "format", format, "TOTPCLI_FORMAT")
 			effectiveSearch := effectiveString(cmd, "search", initialSearch, "TOTPCLI_SEARCH")
+			effectiveSearchEngine := effectiveString(cmd, "search-engine", searchEngine, "TOTPCLI_SEARCH_ENGINE")
+			effectiveSearchEngine, err := search.ParseEngineName(effectiveSearchEngine)
+			if err != nil {
+				exitCode = 2
+				return err
+			}
 
 			resolved, err := provider.ResolveOptions(provider.Options{
 				Path:   effectivePath,
@@ -62,7 +71,17 @@ Environment variables:
 				return err
 			}
 
-			model := tui.NewModel(providers, search.Lexical{}, effectiveSearch, totpcode.Generator{}, time.Now)
+			newSearchEngine := a.NewSearchEngine
+			if newSearchEngine == nil {
+				newSearchEngine = search.NewEngine
+			}
+			engine, err := newSearchEngine(effectiveSearchEngine, providers)
+			if err != nil {
+				exitCode = 2
+				return err
+			}
+
+			model := tui.NewModel(providers, engine, effectiveSearch, totpcode.Generator{}, time.Now)
 			runTUI := a.RunTUI
 			if runTUI == nil {
 				runTUI = runBubbleTea(stdout)
@@ -81,6 +100,7 @@ Environment variables:
 	cmd.Flags().StringVar(&totpPath, "totp", "", "TOTP providers file path (env TOTPCLI_TOTP_PATH)")
 	cmd.Flags().StringVar(&format, "format", "", "TOTP providers file format: json, yaml, or toml (env TOTPCLI_FORMAT)")
 	cmd.Flags().StringVar(&initialSearch, "search", "", "Initial provider search query (env TOTPCLI_SEARCH)")
+	cmd.Flags().StringVar(&searchEngine, "search-engine", search.EngineDigram, "Provider search engine: digram or lexical (env TOTPCLI_SEARCH_ENGINE)")
 
 	if err := cmd.Execute(); err != nil {
 		if exitCode == 0 {

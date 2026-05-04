@@ -40,6 +40,16 @@ func TestSetSearchUpdatesFilteredResults(t *testing.T) {
 	assertLabels(t, model.Filtered(), []string{"GitHub/trezorg", "AWS/root", "GitLab"})
 }
 
+func TestNewModelUsesConfiguredSearchEngine(t *testing.T) {
+	t.Parallel()
+
+	model := NewModel(sampleProviders(), fixedEngine{
+		results: []provider.Provider{{Issuer: "Configured"}},
+	}, "ignored", nil, fixedNow)
+
+	assertLabels(t, model.Filtered(), []string{"Configured"})
+}
+
 func TestViewRendersProviderLabels(t *testing.T) {
 	t.Parallel()
 
@@ -64,7 +74,7 @@ func TestSelectHighlightedProviderGeneratesCode(t *testing.T) {
 	t.Parallel()
 
 	generator := &stubGenerator{results: []totpcode.Result{{Code: "123456", Remaining: 17}}}
-	model := NewModel(sampleProviders(), search.Lexical{}, "", generator, fixedNow)
+	model := NewModel(sampleProviders(), search.NewLexical(sampleProviders()), "", generator, fixedNow)
 	model.MoveDown()
 
 	if ok := model.Select(); !ok {
@@ -103,7 +113,7 @@ func TestSelectWithNoResultsDoesNotGenerateCode(t *testing.T) {
 	t.Parallel()
 
 	generator := &stubGenerator{results: []totpcode.Result{{Code: "123456", Remaining: 17}}}
-	model := NewModel(sampleProviders(), search.Lexical{}, "", generator, fixedNow)
+	model := NewModel(sampleProviders(), search.NewLexical(sampleProviders()), "", generator, fixedNow)
 	model.SetSearch("missing")
 
 	if ok := model.Select(); ok {
@@ -138,7 +148,7 @@ func TestRefreshUpdatesSelectedProviderCode(t *testing.T) {
 			{Code: "222222", Remaining: 30},
 		},
 	}
-	model := NewModel(sampleProviders(), search.Lexical{}, "", generator, fixedNow)
+	model := NewModel(sampleProviders(), search.NewLexical(sampleProviders()), "", generator, fixedNow)
 	model.Select()
 	model.Refresh()
 
@@ -153,7 +163,7 @@ func TestRefreshUpdatesSelectedProviderCode(t *testing.T) {
 func TestGenerationErrorIsDisplayed(t *testing.T) {
 	t.Parallel()
 
-	model := NewModel(sampleProviders(), search.Lexical{}, "", &stubGenerator{err: errors.New("bad secret")}, fixedNow)
+	model := NewModel(sampleProviders(), search.NewLexical(sampleProviders()), "", &stubGenerator{err: errors.New("bad secret")}, fixedNow)
 	model.Select()
 
 	if model.Err() == nil {
@@ -167,7 +177,7 @@ func TestGenerationErrorIsDisplayed(t *testing.T) {
 func TestViewStylesGenerationError(t *testing.T) {
 	t.Parallel()
 
-	model := NewModel(sampleProviders(), search.Lexical{}, "", &stubGenerator{err: errors.New("bad secret")}, fixedNow)
+	model := NewModel(sampleProviders(), search.NewLexical(sampleProviders()), "", &stubGenerator{err: errors.New("bad secret")}, fixedNow)
 	model.Select()
 
 	view := model.View()
@@ -180,7 +190,7 @@ func TestViewStylesGenerationError(t *testing.T) {
 }
 
 func newTestModel(initialSearch string) Model {
-	return NewModel(sampleProviders(), search.Lexical{}, initialSearch, &stubGenerator{
+	return NewModel(sampleProviders(), search.NewLexical(sampleProviders()), initialSearch, &stubGenerator{
 		results: []totpcode.Result{{Code: "123456", Remaining: 17}},
 	}, fixedNow)
 }
@@ -227,4 +237,12 @@ func (s *stubGenerator) Generate(provider.Provider, time.Time) (totpcode.Result,
 	result := s.results[0]
 	s.results = s.results[1:]
 	return result, nil
+}
+
+type fixedEngine struct {
+	results []provider.Provider
+}
+
+func (e fixedEngine) Search(string) []provider.Provider {
+	return e.results
 }

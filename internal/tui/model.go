@@ -228,9 +228,9 @@ func (m Model) Err() error {
 
 func (m *Model) applySearch() {
 	if m.engine == nil {
-		m.engine = search.Lexical{}
+		m.engine = search.NewLexical(m.providers)
 	}
-	m.filtered = m.engine.Search(m.input.Value(), m.providers)
+	m.filtered = m.engine.Search(m.input.Value())
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1
 	}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trezorg/totpcli/internal/provider"
+	"github.com/trezorg/totpcli/internal/search"
 	"github.com/trezorg/totpcli/internal/tui"
 )
 
@@ -118,6 +120,59 @@ func TestRunUsesEnvironmentSearch(t *testing.T) {
 	assertLaunchedLabels(t, launched, []string{"AWS"})
 }
 
+func TestRunSearchEngineFlagSelectsEngine(t *testing.T) {
+	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+
+	var engineName string
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		NewSearchEngine: func(name string, providers []provider.Provider) (search.Engine, error) {
+			engineName = name
+			return search.NewLexical(providers), nil
+		},
+		RunTUI: func(tui.Model) error {
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"--totp", path, "--search-engine", "lexical"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+	if engineName != "lexical" {
+		t.Fatalf("search engine = %q, want lexical", engineName)
+	}
+}
+
+func TestRunUsesEnvironmentSearchEngine(t *testing.T) {
+	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	t.Setenv("TOTPCLI_SEARCH_ENGINE", "lexical")
+
+	var engineName string
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		NewSearchEngine: func(name string, providers []provider.Provider) (search.Engine, error) {
+			engineName = name
+			return search.NewLexical(providers), nil
+		},
+		RunTUI: func(tui.Model) error {
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"--totp", path})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+	if engineName != "lexical" {
+		t.Fatalf("search engine = %q, want lexical", engineName)
+	}
+}
+
 func TestRunFlagsOverrideEnvironment(t *testing.T) {
 	envPath := writeProviderFile(t, singleProviderJSON(), "env.json")
 	flagPath := writeProviderFile(t, `[
@@ -152,6 +207,59 @@ func TestRunFlagsOverrideEnvironment(t *testing.T) {
 		t.Fatalf("SearchValue = %q, want aws", launched.SearchValue())
 	}
 	assertLaunchedLabels(t, launched, []string{"AWS/root"})
+}
+
+func TestRunSearchEngineFlagOverridesEnvironment(t *testing.T) {
+	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	t.Setenv("TOTPCLI_SEARCH_ENGINE", "lexical")
+
+	var engineName string
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		NewSearchEngine: func(name string, providers []provider.Provider) (search.Engine, error) {
+			engineName = name
+			return search.NewLexical(providers), nil
+		},
+		RunTUI: func(tui.Model) error {
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"--totp", path, "--search-engine", "digram"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+	if engineName != "digram" {
+		t.Fatalf("search engine = %q, want digram", engineName)
+	}
+}
+
+func TestRunDefaultSearchEngineIsDigram(t *testing.T) {
+	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+
+	var engineName string
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		NewSearchEngine: func(name string, providers []provider.Provider) (search.Engine, error) {
+			engineName = name
+			return search.NewLexical(providers), nil
+		},
+		RunTUI: func(tui.Model) error {
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"--totp", path})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+	if engineName != "digram" {
+		t.Fatalf("search engine = %q, want digram", engineName)
+	}
 }
 
 func TestRunUsesEnvironmentFormat(t *testing.T) {
@@ -232,9 +340,11 @@ func TestRunHelpListsFlagsAndEnvironment(t *testing.T) {
 		"--totp",
 		"--format",
 		"--search",
+		"--search-engine",
 		"TOTPCLI_TOTP_PATH",
 		"TOTPCLI_FORMAT",
 		"TOTPCLI_SEARCH",
+		"TOTPCLI_SEARCH_ENGINE",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q:\n%s", want, help)
@@ -269,6 +379,24 @@ func TestRunReportsInvalidFormat(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "unsupported format") {
 		t.Fatalf("stderr = %q, want unsupported format error", stderr.String())
+	}
+}
+
+func TestRunReportsInvalidSearchEngineBeforeLoadingProviders(t *testing.T) {
+	t.Parallel()
+
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+	code := app.Run([]string{"--totp", filepath.Join(t.TempDir(), "missing.json"), "--search-engine", "unknown"})
+	if code != 2 {
+		t.Fatalf("Run exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "unsupported search engine") {
+		t.Fatalf("stderr = %q, want unsupported search engine error", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "read provider file") {
+		t.Fatalf("stderr = %q, want validation before provider loading", stderr.String())
 	}
 }
 

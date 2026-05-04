@@ -10,7 +10,7 @@ func TestLexicalSearchReturnsAllProvidersForBlankQuery(t *testing.T) {
 	t.Parallel()
 
 	providers := sampleProviders()
-	got := Lexical{}.Search("", providers)
+	got := NewLexical(providers).Search("")
 
 	assertLabels(t, got, []string{"GitHub/trezorg", "AWS/root", "GitLab"})
 }
@@ -31,7 +31,7 @@ func TestLexicalSearchMatchesIssuerNameAndDisplayLabelCaseInsensitively(t *testi
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
 
-			got := Lexical{}.Search(query, providers)
+			got := NewLexical(providers).Search(query)
 			assertLabels(t, got, want)
 		})
 	}
@@ -40,9 +40,120 @@ func TestLexicalSearchMatchesIssuerNameAndDisplayLabelCaseInsensitively(t *testi
 func TestLexicalSearchExcludesNonMatches(t *testing.T) {
 	t.Parallel()
 
-	got := Lexical{}.Search("missing", sampleProviders())
+	got := NewLexical(sampleProviders()).Search("missing")
 	if len(got) != 0 {
 		t.Fatalf("len(results) = %d, want 0", len(got))
+	}
+}
+
+func TestDigramSearchMatchesIssuerPrefix(t *testing.T) {
+	t.Parallel()
+
+	got := NewDigram(sampleProviders()).Search("git")
+
+	assertLabels(t, got, []string{"GitHub/trezorg", "GitLab"})
+}
+
+func TestDigramSearchMatchesNameSubstring(t *testing.T) {
+	t.Parallel()
+
+	got := NewDigram(sampleProviders()).Search("zorg")
+
+	assertLabels(t, got, []string{"GitHub/trezorg"})
+}
+
+func TestDigramSearchMatchesDisplayLabel(t *testing.T) {
+	t.Parallel()
+
+	got := NewDigram(sampleProviders()).Search("hub/tre")
+
+	assertLabels(t, got, []string{"GitHub/trezorg"})
+}
+
+func TestDigramSearchExcludesNonMatches(t *testing.T) {
+	t.Parallel()
+
+	got := NewDigram(sampleProviders()).Search("missing")
+
+	if len(got) != 0 {
+		t.Fatalf("len(results) = %d, want 0", len(got))
+	}
+}
+
+func TestDigramSearchReturnsAllProvidersForBlankQuery(t *testing.T) {
+	t.Parallel()
+
+	got := NewDigram(sampleProviders()).Search(" \t\n")
+
+	assertLabels(t, got, []string{"GitHub/trezorg", "AWS/root", "GitLab"})
+}
+
+func TestDigramSearchPreservesProviderOrder(t *testing.T) {
+	t.Parallel()
+
+	got := NewDigram([]provider.Provider{
+		{Issuer: "FirstGit"},
+		{Issuer: "Other"},
+		{Issuer: "SecondGit"},
+		{Issuer: "ThirdGit"},
+	}).Search("git")
+
+	assertLabels(t, got, []string{"FirstGit", "SecondGit", "ThirdGit"})
+}
+
+func TestNewEngineDefaultsToDigram(t *testing.T) {
+	t.Parallel()
+
+	engine, err := NewEngine("", sampleProviders())
+	if err != nil {
+		t.Fatalf("NewEngine returned error: %v", err)
+	}
+
+	got := engine.Search("hub/tre")
+
+	assertLabels(t, got, []string{"GitHub/trezorg"})
+}
+
+func TestParseEngineNameDefaultsToDigram(t *testing.T) {
+	t.Parallel()
+
+	name, err := ParseEngineName("")
+	if err != nil {
+		t.Fatalf("ParseEngineName returned error: %v", err)
+	}
+	if name != EngineDigram {
+		t.Fatalf("ParseEngineName = %q, want %q", name, EngineDigram)
+	}
+}
+
+func TestParseEngineNameRejectsUnsupportedName(t *testing.T) {
+	t.Parallel()
+
+	_, err := ParseEngineName("unknown")
+	if err == nil {
+		t.Fatal("ParseEngineName error = nil, want unsupported engine error")
+	}
+}
+
+func TestNewEngineSelectsLexical(t *testing.T) {
+	t.Parallel()
+
+	engine, err := NewEngine(" lexical ", sampleProviders())
+	if err != nil {
+		t.Fatalf("NewEngine returned error: %v", err)
+	}
+
+	got := engine.Search("zorg")
+
+	assertLabels(t, got, []string{"GitHub/trezorg"})
+}
+
+func TestNewEngineRejectsUnsupportedName(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewEngine("unknown", sampleProviders())
+	if err == nil {
+		t.Fatal("NewEngine error = nil, want unsupported engine error")
 	}
 }
 
@@ -50,7 +161,7 @@ func TestSearchEngineInterfaceIsReplaceable(t *testing.T) {
 	t.Parallel()
 
 	var engine Engine = staticEngine{results: []provider.Provider{{Issuer: "Only"}}}
-	got := engine.Search("ignored", sampleProviders())
+	got := engine.Search("ignored")
 
 	assertLabels(t, got, []string{"Only"})
 }
@@ -80,6 +191,6 @@ type staticEngine struct {
 	results []provider.Provider
 }
 
-func (s staticEngine) Search(string, []provider.Provider) []provider.Provider {
+func (s staticEngine) Search(string) []provider.Provider {
 	return s.results
 }

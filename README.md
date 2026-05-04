@@ -5,7 +5,7 @@
 ## Usage
 
 ```sh
-go run ./cmd/totpcli --totp ~/totp.json --format json --search github
+go run ./cmd/totpcli --totp ~/totp.json --format json --search github --search-engine digram
 ```
 
 Flags:
@@ -13,6 +13,7 @@ Flags:
 - `--totp`: provider file path. Defaults to `~/totp.json`, or `~/totp.<format>` when an explicit format is set.
 - `--format`: provider file format, one of `json`, `yaml`, or `toml`. When omitted, the format is detected from `.json`, `.yaml`, `.yml`, or `.toml`; unknown extensions use JSON.
 - `--search`: initial search text for the TUI filter.
+- `--search-engine`: provider search engine, either `digram` or `lexical`. Defaults to `digram`.
 
 Cobra provides command help:
 
@@ -25,6 +26,7 @@ Environment variables can provide defaults when the matching flag is omitted:
 - `TOTPCLI_TOTP_PATH`: provider file path fallback for `--totp`.
 - `TOTPCLI_FORMAT`: provider file format fallback for `--format`.
 - `TOTPCLI_SEARCH`: initial provider search fallback for `--search`.
+- `TOTPCLI_SEARCH_ENGINE`: provider search engine fallback for `--search-engine`.
 
 Command-line flags take precedence over environment variables. Environment variables take precedence over built-in defaults.
 
