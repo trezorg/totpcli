@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/trezorg/totpcli/internal/provider"
-	"github.com/trezorg/totpcli/internal/search"
+	"github.com/trezorg/totpcli/internal/search/lexical"
 	"github.com/trezorg/totpcli/internal/totpcode"
 )
 
@@ -17,9 +17,13 @@ type Generator interface {
 	Generate(provider.Provider, time.Time) (totpcode.Result, error)
 }
 
+type SearchEngine interface {
+	Search(query string) []provider.Provider
+}
+
 type Model struct {
 	providers []provider.Provider
-	engine    search.Engine
+	engine    SearchEngine
 	input     textinput.Model
 	filtered  []provider.Provider
 	cursor    int
@@ -57,7 +61,7 @@ var styles = styleSchema{
 	err:              lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true),
 }
 
-func NewModel(providers []provider.Provider, engine search.Engine, initialSearch string, generator Generator, now func() time.Time) Model {
+func NewModel(providers []provider.Provider, engine SearchEngine, initialSearch string, generator Generator, now func() time.Time) Model {
 	input := textinput.New()
 	input.Placeholder = "Search providers"
 	input.Prompt = "Search: "
@@ -228,7 +232,7 @@ func (m Model) Err() error {
 
 func (m *Model) applySearch() {
 	if m.engine == nil {
-		m.engine = search.NewLexical(m.providers)
+		m.engine = lexical.New(m.providers)
 	}
 	m.filtered = m.engine.Search(m.input.Value())
 	if m.cursor >= len(m.filtered) {

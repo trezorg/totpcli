@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/trezorg/totpcli/internal/provider"
-	"github.com/trezorg/totpcli/internal/search"
+	"github.com/trezorg/totpcli/internal/search/lexical"
 	"github.com/trezorg/totpcli/internal/tui"
 )
 
@@ -128,9 +128,9 @@ func TestRunSearchEngineFlagSelectsEngine(t *testing.T) {
 		Home:   t.TempDir(),
 		Stdout: &bytes.Buffer{},
 		Stderr: &bytes.Buffer{},
-		NewSearchEngine: func(name string, providers []provider.Provider) (search.Engine, error) {
+		NewSearchEngine: func(name string, providers []provider.Provider) (tui.SearchEngine, error) {
 			engineName = name
-			return search.NewLexical(providers), nil
+			return lexical.New(providers), nil
 		},
 		RunTUI: func(tui.Model) error {
 			return nil
@@ -155,9 +155,9 @@ func TestRunUsesEnvironmentSearchEngine(t *testing.T) {
 		Home:   t.TempDir(),
 		Stdout: &bytes.Buffer{},
 		Stderr: &bytes.Buffer{},
-		NewSearchEngine: func(name string, providers []provider.Provider) (search.Engine, error) {
+		NewSearchEngine: func(name string, providers []provider.Provider) (tui.SearchEngine, error) {
 			engineName = name
-			return search.NewLexical(providers), nil
+			return lexical.New(providers), nil
 		},
 		RunTUI: func(tui.Model) error {
 			return nil
@@ -218,9 +218,9 @@ func TestRunSearchEngineFlagOverridesEnvironment(t *testing.T) {
 		Home:   t.TempDir(),
 		Stdout: &bytes.Buffer{},
 		Stderr: &bytes.Buffer{},
-		NewSearchEngine: func(name string, providers []provider.Provider) (search.Engine, error) {
+		NewSearchEngine: func(name string, providers []provider.Provider) (tui.SearchEngine, error) {
 			engineName = name
-			return search.NewLexical(providers), nil
+			return lexical.New(providers), nil
 		},
 		RunTUI: func(tui.Model) error {
 			return nil
@@ -244,9 +244,9 @@ func TestRunDefaultSearchEngineIsDigram(t *testing.T) {
 		Home:   t.TempDir(),
 		Stdout: &bytes.Buffer{},
 		Stderr: &bytes.Buffer{},
-		NewSearchEngine: func(name string, providers []provider.Provider) (search.Engine, error) {
+		NewSearchEngine: func(name string, providers []provider.Provider) (tui.SearchEngine, error) {
 			engineName = name
-			return search.NewLexical(providers), nil
+			return lexical.New(providers), nil
 		},
 		RunTUI: func(tui.Model) error {
 			return nil

@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 	"github.com/trezorg/totpcli/internal/provider"
-	"github.com/trezorg/totpcli/internal/search"
+	"github.com/trezorg/totpcli/internal/search/lexical"
 	"github.com/trezorg/totpcli/internal/totpcode"
 )
 
@@ -74,7 +74,7 @@ func TestSelectHighlightedProviderGeneratesCode(t *testing.T) {
 	t.Parallel()
 
 	generator := &stubGenerator{results: []totpcode.Result{{Code: "123456", Remaining: 17}}}
-	model := NewModel(sampleProviders(), search.NewLexical(sampleProviders()), "", generator, fixedNow)
+	model := NewModel(sampleProviders(), lexical.New(sampleProviders()), "", generator, fixedNow)
 	model.MoveDown()
 
 	if ok := model.Select(); !ok {
@@ -113,7 +113,7 @@ func TestSelectWithNoResultsDoesNotGenerateCode(t *testing.T) {
 	t.Parallel()
 
 	generator := &stubGenerator{results: []totpcode.Result{{Code: "123456", Remaining: 17}}}
-	model := NewModel(sampleProviders(), search.NewLexical(sampleProviders()), "", generator, fixedNow)
+	model := NewModel(sampleProviders(), lexical.New(sampleProviders()), "", generator, fixedNow)
 	model.SetSearch("missing")
 
 	if ok := model.Select(); ok {
@@ -148,7 +148,7 @@ func TestRefreshUpdatesSelectedProviderCode(t *testing.T) {
 			{Code: "222222", Remaining: 30},
 		},
 	}
-	model := NewModel(sampleProviders(), search.NewLexical(sampleProviders()), "", generator, fixedNow)
+	model := NewModel(sampleProviders(), lexical.New(sampleProviders()), "", generator, fixedNow)
 	model.Select()
 	model.Refresh()
 
@@ -163,7 +163,7 @@ func TestRefreshUpdatesSelectedProviderCode(t *testing.T) {
 func TestGenerationErrorIsDisplayed(t *testing.T) {
 	t.Parallel()
 
-	model := NewModel(sampleProviders(), search.NewLexical(sampleProviders()), "", &stubGenerator{err: errors.New("bad secret")}, fixedNow)
+	model := NewModel(sampleProviders(), lexical.New(sampleProviders()), "", &stubGenerator{err: errors.New("bad secret")}, fixedNow)
 	model.Select()
 
 	if model.Err() == nil {
@@ -177,7 +177,7 @@ func TestGenerationErrorIsDisplayed(t *testing.T) {
 func TestViewStylesGenerationError(t *testing.T) {
 	t.Parallel()
 
-	model := NewModel(sampleProviders(), search.NewLexical(sampleProviders()), "", &stubGenerator{err: errors.New("bad secret")}, fixedNow)
+	model := NewModel(sampleProviders(), lexical.New(sampleProviders()), "", &stubGenerator{err: errors.New("bad secret")}, fixedNow)
 	model.Select()
 
 	view := model.View()
@@ -190,7 +190,7 @@ func TestViewStylesGenerationError(t *testing.T) {
 }
 
 func newTestModel(initialSearch string) Model {
-	return NewModel(sampleProviders(), search.NewLexical(sampleProviders()), initialSearch, &stubGenerator{
+	return NewModel(sampleProviders(), lexical.New(sampleProviders()), initialSearch, &stubGenerator{
 		results: []totpcode.Result{{Code: "123456", Remaining: 17}},
 	}, fixedNow)
 }
