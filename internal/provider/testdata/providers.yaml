@@ -1,0 +1,7 @@
+- secret: ignored
+  name: trezorg
+  issuer: GitHub
+  algorithm: SHA1
+  digits: SIX
+  type: TOTP
+  totpSecret: JBSWY3DPEHPK3PXP
