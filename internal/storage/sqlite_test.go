@@ -190,6 +190,110 @@ func TestSQLiteRepositoryRollsBackInvalidImport(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryInsertsProvider(t *testing.T) {
+	t.Parallel()
+
+	repo := openTestSQLite(t)
+
+	added, err := repo.InsertProvider(provider.RawProvider{
+		Name:       " trezorg ",
+		Issuer:     " GitHub ",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	})
+	if err != nil {
+		t.Fatalf("InsertProvider returned error: %v", err)
+	}
+	if added.DisplayLabel() != "GitHub/trezorg" {
+		t.Fatalf("DisplayLabel = %q, want GitHub/trezorg", added.DisplayLabel())
+	}
+	if added.Algorithm != provider.AlgorithmSHA1 {
+		t.Fatalf("Algorithm = %q, want SHA1", added.Algorithm)
+	}
+	if added.Digits != 6 {
+		t.Fatalf("Digits = %d, want 6", added.Digits)
+	}
+	if added.Type != "TOTP" {
+		t.Fatalf("Type = %q, want TOTP", added.Type)
+	}
+
+	providers, err := repo.ListProviders()
+	if err != nil {
+		t.Fatalf("ListProviders returned error: %v", err)
+	}
+	if len(providers) != 1 || providers[0].DisplayLabel() != "GitHub/trezorg" {
+		t.Fatalf("providers = %#v, want GitHub/trezorg", providers)
+	}
+}
+
+func TestSQLiteRepositoryUpdatesDuplicateInsertProvider(t *testing.T) {
+	t.Parallel()
+
+	repo := openTestSQLite(t)
+
+	if _, err := repo.InsertProvider(provider.RawProvider{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Algorithm:  "SHA1",
+		Digits:     "SIX",
+		Type:       "TOTP",
+		TOTPSecret: "NBUQ====",
+	}); err != nil {
+		t.Fatalf("InsertProvider initial returned error: %v", err)
+	}
+
+	_, err := repo.InsertProvider(provider.RawProvider{
+		Name:       " trezorg ",
+		Issuer:     " GitHub ",
+		Secret:     "updated metadata",
+		Algorithm:  "SHA256",
+		Digits:     "EIGHT",
+		Type:       "TOTP",
+		TOTPSecret: "NBUQ",
+	})
+	if err != nil {
+		t.Fatalf("InsertProvider duplicate returned error: %v", err)
+	}
+
+	providers, err := repo.ListProviders()
+	if err != nil {
+		t.Fatalf("ListProviders returned error: %v", err)
+	}
+	if len(providers) != 1 {
+		t.Fatalf("len(providers) = %d, want 1", len(providers))
+	}
+	if providers[0].Algorithm != provider.AlgorithmSHA256 {
+		t.Fatalf("Algorithm = %q, want updated SHA256", providers[0].Algorithm)
+	}
+	if providers[0].Digits != 8 {
+		t.Fatalf("Digits = %d, want updated 8", providers[0].Digits)
+	}
+	if providers[0].Secret != "updated metadata" {
+		t.Fatalf("Secret = %q, want updated metadata", providers[0].Secret)
+	}
+}
+
+func TestSQLiteRepositoryRejectsInvalidInsertProvider(t *testing.T) {
+	t.Parallel()
+
+	repo := openTestSQLite(t)
+
+	_, err := repo.InsertProvider(provider.RawProvider{
+		Name:   "trezorg",
+		Issuer: "GitHub",
+	})
+	if err == nil {
+		t.Fatal("InsertProvider returned nil error for invalid provider")
+	}
+
+	providers, err := repo.ListProviders()
+	if err != nil {
+		t.Fatalf("ListProviders returned error: %v", err)
+	}
+	if len(providers) != 0 {
+		t.Fatalf("providers = %#v, want no providers", providers)
+	}
+}
+
 func TestSQLiteRepositoryInspectsTables(t *testing.T) {
 	t.Parallel()
 

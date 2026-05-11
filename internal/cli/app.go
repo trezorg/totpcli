@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/base32"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,10 +57,21 @@ type totpOptions struct {
 	noTUI         bool
 }
 
+type addOptions struct {
+	path       string
+	issuer     string
+	name       string
+	totpSecret string
+	secret     string
+	algorithm  string
+	digits     string
+}
+
 type providerRepository interface {
 	Init() error
 	ListProviders() ([]provider.Provider, error)
 	InspectTables() ([]storage.TableSnapshot, error)
+	InsertProvider(provider.RawProvider) (provider.Provider, error)
 	UpsertProviders([]provider.RawProvider) (storage.ImportResult, error)
 	Close() error
 }
@@ -72,6 +84,7 @@ func (a App) Run(args []string) int {
 	importOpts := struct {
 		path string
 	}{}
+	addOpts := addOptions{}
 	importFileOpts := struct {
 		path   string
 		format string
@@ -146,6 +159,57 @@ by replacing its extension with .sqlite. Duplicate providers are overridden.`,
 		},
 	}
 	importCmd.Flags().StringVar(&importOpts.path, "totp", "", "Output SQLite provider database path (env TOTPCLI_TOTP_PATH)")
+
+	addCmd := &cobra.Command{
+		Use:   "add",
+		Short: "Add one TOTP provider to SQLite storage",
+		Long: `Add one TOTP provider to SQLite storage.
+
+The command creates TOTP providers only. The type defaults to TOTP, algorithm
+uses default SHA1, digits use default SIX, and duplicate providers are updated.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			effectivePath := effectiveString(cmd, "totp", addOpts.path, "TOTPCLI_TOTP_PATH")
+			raw := provider.RawProvider{
+				Secret:     addOpts.secret,
+				Name:       addOpts.name,
+				Issuer:     addOpts.issuer,
+				Algorithm:  addOpts.algorithm,
+				Digits:     addOpts.digits,
+				Type:       "TOTP",
+				TOTPSecret: addOpts.totpSecret,
+			}
+			if err := validateAddProvider(raw); err != nil {
+				exitCode = 2
+				return err
+			}
+			dbPath, err := storage.ResolveDatabasePath(effectivePath, filepath.Join("~", "totp.sqlite"), a.Home)
+			if err != nil {
+				exitCode = 2
+				return err
+			}
+			repo, err := a.openRepository(dbPath)
+			if err != nil {
+				exitCode = 1
+				return err
+			}
+			defer func() {
+				_ = repo.Close()
+			}()
+			added, err := repo.InsertProvider(raw)
+			if err != nil {
+				exitCode = 1
+				return err
+			}
+			return printAddResult(stdout, dbPath, added)
+		},
+	}
+	addCmd.Flags().StringVar(&addOpts.path, "totp", "", "SQLite provider database path (env TOTPCLI_TOTP_PATH)")
+	addCmd.Flags().StringVar(&addOpts.issuer, "issuer", "", "Provider issuer")
+	addCmd.Flags().StringVar(&addOpts.name, "name", "", "Provider account name")
+	addCmd.Flags().StringVar(&addOpts.totpSecret, "totp-secret", "", "Provider TOTP secret")
+	addCmd.Flags().StringVar(&addOpts.secret, "secret", "", "Provider secret metadata")
+	addCmd.Flags().StringVar(&addOpts.algorithm, "algorithm", "", "Provider algorithm: SHA1, SHA256, or SHA512 (default SHA1)")
+	addCmd.Flags().StringVar(&addOpts.digits, "digits", "", "Provider digits: SIX, EIGHT, 6, or 8 (default SIX)")
 
 	importFileCmd := &cobra.Command{
 		Use:   "import-file <provider-file>...",
@@ -224,7 +288,7 @@ When --totp is omitted, show reads the default provider database path.`,
 	showCmd.Flags().StringVar(&showOpts.path, "totp", "", "SQLite provider database path (env TOTPCLI_TOTP_PATH)")
 	showCmd.Flags().StringVar(&showOpts.format, "format", string(showFormatTable), "Show output format: table, json, yaml, or toml")
 
-	cmd.AddCommand(totpCmd, importCmd, importFileCmd, showCmd)
+	cmd.AddCommand(totpCmd, addCmd, importCmd, importFileCmd, showCmd)
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
@@ -327,6 +391,49 @@ func (a App) openRepository(path string) (providerRepository, error) {
 func printImportResult(output io.Writer, result storage.ImportResult) error {
 	_, err := fmt.Fprintf(output, "imported providers into %s: imported=%d added=%d overridden=%d final=%d\n",
 		result.OutputPath, result.Imported, result.Added, result.Overridden, result.Final)
+	return err
+}
+
+func validateAddProvider(raw provider.RawProvider) error {
+	normalized, err := provider.Normalize(raw)
+	if err != nil {
+		return err
+	}
+	if err := validateAddTOTPSecret(normalized.TOTPSecret, normalized.Algorithm); err != nil {
+		return err
+	}
+	if _, err := totpcode.Generate(normalized, time.Unix(0, 0)); err != nil {
+		return fmt.Errorf("invalid totp secret: %w", err)
+	}
+	return nil
+}
+
+func validateAddTOTPSecret(secret string, algorithm provider.Algorithm) error {
+	normalized := strings.ToUpper(strings.TrimSpace(secret))
+	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.TrimRight(normalized, "="))
+	if err != nil {
+		return fmt.Errorf("invalid totp secret: %w", err)
+	}
+	minBytes := minTOTPSecretBytes(algorithm)
+	if len(decoded) < minBytes {
+		return fmt.Errorf("invalid totp secret: decoded key is %d bytes, want at least %d bytes for %s", len(decoded), minBytes, algorithm)
+	}
+	return nil
+}
+
+func minTOTPSecretBytes(algorithm provider.Algorithm) int {
+	switch algorithm {
+	case provider.AlgorithmSHA256:
+		return 32
+	case provider.AlgorithmSHA512:
+		return 64
+	default:
+		return 20
+	}
+}
+
+func printAddResult(output io.Writer, path string, added provider.Provider) error {
+	_, err := fmt.Fprintf(output, "saved provider %s to %s\n", added.DisplayLabel(), path)
 	return err
 }
 

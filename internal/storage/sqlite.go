@@ -33,6 +33,7 @@ type Repository interface {
 	Init() error
 	ListProviders() ([]provider.Provider, error)
 	InspectTables() ([]TableSnapshot, error)
+	InsertProvider(provider.RawProvider) (provider.Provider, error)
 	UpsertProviders([]provider.RawProvider) (ImportResult, error)
 }
 
@@ -171,6 +172,76 @@ ORDER BY name`)
 		tables = append(tables, table)
 	}
 	return tables, nil
+}
+
+func (r *SQLiteRepository) InsertProvider(raw provider.RawProvider) (provider.Provider, error) {
+	normalized, err := provider.Normalize(raw)
+	if err != nil {
+		return provider.Provider{}, err
+	}
+	key := canonicalBase32Secret(normalized.TOTPSecret)
+
+	tx, err := r.db.Begin()
+	if err != nil {
+		return provider.Provider{}, fmt.Errorf("begin provider insert: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var id int64
+	err = tx.QueryRow(`
+SELECT id
+FROM providers
+WHERE issuer = ? AND name = ? AND totp_secret_key = ?`,
+		normalized.Issuer, normalized.Name, key).Scan(&id)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return provider.Provider{}, fmt.Errorf("check duplicate provider: %w", err)
+	default:
+		if _, err := tx.Exec(`
+UPDATE providers
+SET secret = ?, algorithm = ?, digits = ?, type = ?, totp_secret = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?`,
+			normalized.Secret,
+			string(normalized.Algorithm),
+			normalized.Digits,
+			normalized.Type,
+			normalized.TOTPSecret,
+			id,
+		); err != nil {
+			return provider.Provider{}, fmt.Errorf("update provider: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return provider.Provider{}, fmt.Errorf("commit provider update: %w", err)
+		}
+		committed = true
+		return normalized, nil
+	}
+
+	if _, err := tx.Exec(`
+INSERT INTO providers (secret, name, issuer, algorithm, digits, type, totp_secret, totp_secret_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		normalized.Secret,
+		normalized.Name,
+		normalized.Issuer,
+		string(normalized.Algorithm),
+		normalized.Digits,
+		normalized.Type,
+		normalized.TOTPSecret,
+		key,
+	); err != nil {
+		return provider.Provider{}, fmt.Errorf("insert provider: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return provider.Provider{}, fmt.Errorf("commit provider insert: %w", err)
+	}
+	committed = true
+	return normalized, nil
 }
 
 func (r *SQLiteRepository) inspectTable(name string) (TableSnapshot, error) {

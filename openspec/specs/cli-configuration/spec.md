@@ -5,7 +5,7 @@ Define command parsing, environment variable configuration, precedence, and help
 ## Requirements
 
 ### Requirement: Cobra command parsing
-The CLI SHALL parse commands and flags through a Cobra root command named `totpcli`. The CLI SHALL preserve root invocation as the default TOTP display behavior, SHALL expose a `totp` subcommand for the same behavior, SHALL expose `--totp`, `--search`, `--search-engine`, and `--no-tui` flags for TOTP display behavior, SHALL expose an `import` subcommand for Google Authenticator QR provider import behavior, SHALL expose an `import-file` subcommand for provider file import behavior, and SHALL expose a `show` subcommand for SQLite table inspection behavior. The CLI SHALL expose `--format` only on subcommands that define format-specific behavior, including `import-file` and `show`. The CLI SHALL NOT expose `--format` on root invocation, the `totp` subcommand, or the `import` subcommand.
+The CLI SHALL parse commands and flags through a Cobra root command named `totpcli`. The CLI SHALL preserve root invocation as the default TOTP display behavior, SHALL expose a `totp` subcommand for the same behavior, SHALL expose `--totp`, `--search`, `--search-engine`, and `--no-tui` flags for TOTP display behavior, SHALL expose an `add` subcommand for direct TOTP provider creation behavior, SHALL expose an `import` subcommand for Google Authenticator QR provider import behavior, SHALL expose an `import-file` subcommand for provider file import behavior, and SHALL expose a `show` subcommand for SQLite table inspection behavior. The CLI SHALL expose `--format` only on subcommands that define format-specific behavior, including `import-file` and `show`. The CLI SHALL NOT expose `--format` on root invocation, the `totp` subcommand, the `add` subcommand, or the `import` subcommand.
 
 #### Scenario: Existing TOTP flags still launch the TUI
 - **WHEN** the user starts the application with `--totp /tmp/providers.sqlite --search git`
@@ -31,6 +31,10 @@ The CLI SHALL parse commands and flags through a Cobra root command named `totpc
 - **WHEN** the user starts the application with `totp --no-tui`
 - **THEN** the CLI loads providers and prints non-interactive token output instead of starting the TUI
 
+#### Scenario: Add subcommand routes provider creation behavior
+- **WHEN** the user starts the application with `add --issuer GitHub --name trezorg --totp-secret GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ --totp /tmp/providers.sqlite`
+- **THEN** the CLI creates one TOTP provider record instead of starting the TUI
+
 #### Scenario: Import subcommand routes QR import behavior
 - **WHEN** the user starts the application with `import /tmp/export.jpg --totp /tmp/providers.sqlite`
 - **THEN** the CLI runs QR provider import behavior instead of starting the TUI
@@ -45,6 +49,10 @@ The CLI SHALL parse commands and flags through a Cobra root command named `totpc
 
 #### Scenario: Format flag is rejected on TOTP workflow
 - **WHEN** the user starts the application with `totp --format json`
+- **THEN** the CLI reports a command usage error and exits with a non-zero usage status
+
+#### Scenario: Format flag is rejected on add workflow
+- **WHEN** the user starts the application with `add --issuer GitHub --totp-secret GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ --format json`
 - **THEN** the CLI reports a command usage error and exits with a non-zero usage status
 
 #### Scenario: Unknown flag reports a usage error
@@ -106,7 +114,7 @@ The CLI SHALL provide Cobra-generated help output that documents available comma
 
 #### Scenario: Help output lists supported commands
 - **WHEN** the user starts the application with `--help`
-- **THEN** the CLI prints help output that includes the `totp`, `import`, `import-file`, and `show` commands
+- **THEN** the CLI prints help output that includes the `totp`, `add`, `import`, `import-file`, and `show` commands
 
 #### Scenario: Help output lists supported TOTP flags
 - **WHEN** the user starts the application with `--help`
@@ -115,6 +123,12 @@ The CLI SHALL provide Cobra-generated help output that documents available comma
 #### Scenario: TOTP subcommand help lists supported TOTP flags
 - **WHEN** the user starts the application with `totp --help`
 - **THEN** the CLI prints help output that includes `--totp`, `--search`, `--search-engine`, and `--no-tui`, and does not include `--format`
+
+#### Scenario: Add subcommand help lists add options
+- **WHEN** the user starts the application with `add --help`
+- **THEN** the CLI prints help output that includes provider creation behavior, `--totp`, `--issuer`, `--name`, `--totp-secret`, `--secret`, `--algorithm`, and `--digits`
+- **AND** the help output documents default `SHA1`, default `SIX`, and default `TOTP`
+- **AND** the help output does not include `--format` or `--type`
 
 #### Scenario: Import subcommand help lists import options
 - **WHEN** the user starts the application with `import --help`

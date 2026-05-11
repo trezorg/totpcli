@@ -21,6 +21,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	addSHA1Secret   = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+	addSHA256Secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA"
+	addSHA512Secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA"
+)
+
 func TestRunLoadsProvidersAndLaunchesTUIWithSearch(t *testing.T) {
 	t.Parallel()
 
@@ -227,6 +233,216 @@ func TestRunImportSubcommandUsesDecoderAndWritesProviders(t *testing.T) {
 	}
 	providers := loadProviderDatabase(t, dbPath)
 	assertProviderLabels(t, providers, []string{"GitHub/trezorg"})
+}
+
+func TestRunAddSubcommandWritesProviderWithDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"add", "--issuer", "GitHub", "--name", "trezorg", "--totp-secret", addSHA1Secret, "--totp", path})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), path) || !strings.Contains(stdout.String(), "GitHub/trezorg") {
+		t.Fatalf("stdout = %q, want add summary with path and provider label", stdout.String())
+	}
+	providers := loadProviderDatabase(t, path)
+	assertProviderLabels(t, providers, []string{"GitHub/trezorg"})
+	got := providers[0]
+	if got.Algorithm != provider.AlgorithmSHA1 || got.Digits != 6 || got.Secret != "" || got.Type != "TOTP" {
+		t.Fatalf("provider = %#v, want default SHA1, six digits, empty secret, TOTP type", got)
+	}
+}
+
+func TestRunAddSubcommandWritesExplicitOptionalProviderFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+	code := app.Run([]string{
+		"add",
+		"--issuer", "GitHub",
+		"--name", "trezorg",
+		"--totp-secret", addSHA512Secret,
+		"--secret", "metadata",
+		"--algorithm", "SHA512",
+		"--digits", "8",
+		"--totp", path,
+	})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	providers := loadProviderDatabase(t, path)
+	assertProviderLabels(t, providers, []string{"GitHub/trezorg"})
+	got := providers[0]
+	if got.Algorithm != provider.AlgorithmSHA512 || got.Digits != 8 || got.Secret != "metadata" || got.Type != "TOTP" {
+		t.Fatalf("provider = %#v, want explicit SHA512, eight digits, metadata secret, TOTP type", got)
+	}
+}
+
+func TestRunAddSubcommandAllowsIssuerOnlyAndNameOnly(t *testing.T) {
+	dir := t.TempDir()
+
+	tests := map[string]struct {
+		args []string
+		want string
+	}{
+		"issuer only": {
+			args: []string{"--issuer", "AWS"},
+			want: "AWS",
+		},
+		"name only": {
+			args: []string{"--name", "trezorg"},
+			want: "trezorg",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".sqlite")
+			args := append([]string{"add"}, tt.args...)
+			args = append(args, "--totp-secret", addSHA1Secret, "--totp", path)
+
+			var stderr bytes.Buffer
+			app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+			code := app.Run(args)
+			if code != 0 {
+				t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+			}
+			assertProviderLabels(t, loadProviderDatabase(t, path), []string{tt.want})
+		})
+	}
+}
+
+func TestRunAddSubcommandResolvesEnvironmentAndDefaultDatabasePaths(t *testing.T) {
+	t.Run("environment", func(t *testing.T) {
+		envPath := filepath.Join(t.TempDir(), "env.sqlite")
+		t.Setenv("TOTPCLI_TOTP_PATH", envPath)
+
+		var stderr bytes.Buffer
+		app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+		code := app.Run([]string{"add", "--issuer", "GitHub", "--totp-secret", addSHA1Secret})
+		if code != 0 {
+			t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+		}
+		assertProviderLabels(t, loadProviderDatabase(t, envPath), []string{"GitHub"})
+	})
+
+	t.Run("default", func(t *testing.T) {
+		home := t.TempDir()
+		defaultPath := filepath.Join(home, "totp.sqlite")
+
+		var stderr bytes.Buffer
+		app := App{Home: home, Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+		code := app.Run([]string{"add", "--issuer", "GitHub", "--totp-secret", addSHA1Secret})
+		if code != 0 {
+			t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+		}
+		assertProviderLabels(t, loadProviderDatabase(t, defaultPath), []string{"GitHub"})
+	})
+}
+
+func TestRunAddSubcommandRejectsInvalidInputBeforeOpeningDatabase(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string][]string{
+		"missing secret":           {"add", "--issuer", "GitHub"},
+		"missing identity":         {"add", "--totp-secret", addSHA1Secret},
+		"invalid totp secret":      {"add", "--issuer", "GitHub", "--totp-secret", "not-base32"},
+		"base32 encoded short key": {"add", "--issuer", "GitHub", "--totp-secret", "NBUQ"},
+		"sha1 key too short":       {"add", "--issuer", "GitHub", "--totp-secret", "JBSWY3DPEHPK3PXP"},
+		"sha256 key too short":     {"add", "--issuer", "GitHub", "--totp-secret", addSHA1Secret, "--algorithm", "SHA256"},
+		"sha512 key too short":     {"add", "--issuer", "GitHub", "--totp-secret", addSHA256Secret, "--algorithm", "SHA512"},
+		"unsupported algorithm":    {"add", "--issuer", "GitHub", "--totp-secret", addSHA1Secret, "--algorithm", "MD5"},
+		"unsupported digits":       {"add", "--issuer", "GitHub", "--totp-secret", addSHA1Secret, "--digits", "7"},
+	}
+
+	for name, args := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var stderr bytes.Buffer
+			app := App{
+				Home:   t.TempDir(),
+				Stdout: &bytes.Buffer{},
+				Stderr: &stderr,
+				NewRepository: func(string) (providerRepository, error) {
+					t.Fatal("NewRepository called before add input validation")
+					return nil, nil
+				},
+			}
+
+			code := app.Run(args)
+			if code != 2 {
+				t.Fatalf("Run exit code = %d, want 2", code)
+			}
+			if stderr.String() == "" {
+				t.Fatal("stderr is empty, want validation error")
+			}
+		})
+	}
+}
+
+func TestRunAddSubcommandUpdatesDuplicateProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	seedProviderDatabase(t, path, []provider.RawProvider{{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Algorithm:  "SHA1",
+		Digits:     "SIX",
+		Type:       "TOTP",
+		TOTPSecret: addSHA256Secret,
+	}})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"add", "--issuer", " GitHub ", "--name", " trezorg ", "--totp-secret", addSHA256Secret, "--algorithm", "SHA256", "--digits", "EIGHT", "--secret", "metadata", "--totp", path})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "GitHub/trezorg") || !strings.Contains(stdout.String(), path) {
+		t.Fatalf("stdout = %q, want add summary with path and provider label", stdout.String())
+	}
+	providers := loadProviderDatabase(t, path)
+	assertProviderLabels(t, providers, []string{"GitHub/trezorg"})
+	if providers[0].Algorithm != provider.AlgorithmSHA256 || providers[0].Digits != 8 || providers[0].Secret != "metadata" {
+		t.Fatalf("provider = %#v, want duplicate updated", providers[0])
+	}
+}
+
+func TestRunAddSubcommandRejectsUnsupportedFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string][]string{
+		"type":   {"add", "--issuer", "GitHub", "--totp-secret", "JBSWY3DPEHPK3PXP", "--type", "TOTP"},
+		"format": {"add", "--issuer", "GitHub", "--totp-secret", "JBSWY3DPEHPK3PXP", "--format", "json"},
+	}
+
+	for name, args := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var stderr bytes.Buffer
+			app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+			code := app.Run(args)
+			if code != 2 {
+				t.Fatalf("Run exit code = %d, want 2", code)
+			}
+			if !strings.Contains(stderr.String(), "unknown flag") {
+				t.Fatalf("stderr = %q, want unknown flag error", stderr.String())
+			}
+		})
+	}
 }
 
 func TestRunImportConvertsNonSQLiteOutputPath(t *testing.T) {
@@ -780,6 +996,7 @@ func TestRunHelpListsFlagsAndEnvironment(t *testing.T) {
 	help := stdout.String()
 	for _, want := range []string{
 		"totp",
+		"add",
 		"import",
 		"import-file",
 		"show",
@@ -807,6 +1024,19 @@ func TestRunSubcommandHelpListsRelevantFlags(t *testing.T) {
 			"--search",
 			"--search-engine",
 			"--no-tui",
+		},
+		"add": {
+			"provider",
+			"default SHA1",
+			"default SIX",
+			"type defaults to TOTP",
+			"--totp",
+			"--issuer",
+			"--name",
+			"--totp-secret",
+			"--secret",
+			"--algorithm",
+			"--digits",
 		},
 		"import": {
 			"qr-image",
@@ -840,6 +1070,13 @@ func TestRunSubcommandHelpListsRelevantFlags(t *testing.T) {
 			for _, want := range wants {
 				if !strings.Contains(stdout.String(), want) {
 					t.Fatalf("%s help missing %q:\n%s", command, want, stdout.String())
+				}
+			}
+			if command == "add" {
+				for _, unwanted := range []string{"--format", "--type"} {
+					if strings.Contains(stdout.String(), unwanted) {
+						t.Fatalf("%s help includes %q unexpectedly:\n%s", command, unwanted, stdout.String())
+					}
 				}
 			}
 		})
