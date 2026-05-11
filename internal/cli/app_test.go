@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,8 +12,10 @@ import (
 
 	"github.com/trezorg/totpcli/internal/provider"
 	"github.com/trezorg/totpcli/internal/search/lexical"
+	"github.com/trezorg/totpcli/internal/storage"
 	"github.com/trezorg/totpcli/internal/totpcode"
 	"github.com/trezorg/totpcli/internal/tui"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 func TestRunLoadsProvidersAndLaunchesTUIWithSearch(t *testing.T) {
@@ -147,6 +150,284 @@ func TestRunSearchEngineFlagSelectsEngine(t *testing.T) {
 	if engineName != "lexical" {
 		t.Fatalf("search engine = %q, want lexical", engineName)
 	}
+}
+
+func TestRunTOTPSubcommandUsesTOTPBehavior(t *testing.T) {
+	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+
+	var launched tui.Model
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		RunTUI: func(model tui.Model) error {
+			launched = model
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"totp", "--totp", path, "--search", "git"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+	if launched.SearchValue() != "git" {
+		t.Fatalf("SearchValue = %q, want git", launched.SearchValue())
+	}
+	assertLaunchedLabels(t, launched, []string{"GitHub/trezorg"})
+}
+
+func TestRunTOTPSubcommandNoTUIPrintsTokenOutput(t *testing.T) {
+	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+
+	var stdout bytes.Buffer
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &stdout,
+		Stderr: &bytes.Buffer{},
+		Now:    fixedNow,
+		RunTUI: func(tui.Model) error {
+			t.Fatal("RunTUI called in no-tui mode")
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"totp", "--totp", path, "--no-tui"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+	assertTokenTable(t, stdout.String(), "GitHub/trezorg")
+}
+
+func TestRunImportSubcommandUsesDecoderAndWritesProviders(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "providers.json")
+	dbPath := strings.TrimSuffix(outputPath, ".json") + ".sqlite"
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{
+		Home:            t.TempDir(),
+		Stdout:          &stdout,
+		Stderr:          &stderr,
+		ImportQRDecoder: stubQRDecoder{uri: testMigrationURI([]byte("hello"), "trezorg", "GitHub")},
+		RunTUI: func(tui.Model) error {
+			t.Fatal("RunTUI called for import command")
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"import", "/tmp/export.png", "--totp", outputPath})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "imported=1") || !strings.Contains(stdout.String(), "added=1") || !strings.Contains(stdout.String(), dbPath) {
+		t.Fatalf("stdout = %q, want import summary", stdout.String())
+	}
+	providers := loadProviderDatabase(t, dbPath)
+	assertProviderLabels(t, providers, []string{"GitHub/trezorg"})
+}
+
+func TestRunImportConvertsNonSQLiteOutputPath(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "providers.yaml")
+	dbPath := strings.TrimSuffix(outputPath, ".yaml") + ".sqlite"
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{
+		Home:            t.TempDir(),
+		Stdout:          &stdout,
+		Stderr:          &stderr,
+		ImportQRDecoder: stubQRDecoder{uri: testMigrationURI([]byte("hello"), "trezorg", "GitHub")},
+	}
+
+	code := app.Run([]string{"import", "/tmp/export.png", "--totp", outputPath})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), dbPath) {
+		t.Fatalf("stdout = %q, want converted sqlite path %q", stdout.String(), dbPath)
+	}
+	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+		t.Fatalf("source-shaped output file exists or stat failed unexpectedly: %v", err)
+	}
+	assertProviderLabels(t, loadProviderDatabase(t, dbPath), []string{"GitHub/trezorg"})
+}
+
+func TestRunImportDefaultsToImageSQLitePath(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "export.png")
+	dbPath := strings.TrimSuffix(imagePath, ".png") + ".sqlite"
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{
+		Home:            t.TempDir(),
+		Stdout:          &stdout,
+		Stderr:          &stderr,
+		ImportQRDecoder: stubQRDecoder{uri: testMigrationURI([]byte("hello"), "trezorg", "GitHub")},
+	}
+
+	code := app.Run([]string{"import", imagePath})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), dbPath) || !strings.Contains(stdout.String(), "imported=1") {
+		t.Fatalf("stdout = %q, want sqlite import summary", stdout.String())
+	}
+	assertProviderLabels(t, loadProviderDatabase(t, dbPath), []string{"GitHub/trezorg"})
+}
+
+func TestRunImportTOTPPFlagOverridesEnvironmentPath(t *testing.T) {
+	envPath := writeProviderFile(t, singleProviderJSON(), "env.json")
+	flagPath := filepath.Join(t.TempDir(), "flag.json")
+	flagDBPath := strings.TrimSuffix(flagPath, ".json") + ".sqlite"
+	t.Setenv("TOTPCLI_TOTP_PATH", envPath)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{
+		Home:            t.TempDir(),
+		Stdout:          &stdout,
+		Stderr:          &stderr,
+		ImportQRDecoder: stubQRDecoder{uri: testMigrationURI([]byte("world"), "root", "AWS")},
+	}
+
+	code := app.Run([]string{"import", "/tmp/export.png", "--totp", flagPath})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertProviderLabels(t, loadProviderDatabase(t, flagDBPath), []string{"AWS/root"})
+	envDBPath, err := storage.ResolveDatabasePath(envPath, "", "")
+	if err != nil {
+		t.Fatalf("resolve env db path: %v", err)
+	}
+	assertProviderLabels(t, loadProviderDatabase(t, envDBPath), []string{"GitHub/trezorg"})
+}
+
+func TestRunImportRejectsOverrideFlag(t *testing.T) {
+	outputPath := writeProviderFile(t, singleProviderJSON(), "providers.json")
+
+	var stderr bytes.Buffer
+	app := App{
+		Home:            t.TempDir(),
+		Stdout:          &bytes.Buffer{},
+		Stderr:          &stderr,
+		ImportQRDecoder: stubQRDecoder{uri: testMigrationURI([]byte("world"), "root", "AWS")},
+	}
+
+	code := app.Run([]string{"import", "/tmp/export.png", "--totp", outputPath, "--override"})
+	if code != 2 {
+		t.Fatalf("Run exit code = %d, want 2", code)
+	}
+}
+
+func TestRunImportFileImportsProviderFiles(t *testing.T) {
+	dir := t.TempDir()
+	jsonPath := writeImportFile(t, dir, "providers.json", singleProviderJSON())
+	yamlPath := writeImportFile(t, dir, "extra.yaml", `- name: root
+  issuer: AWS
+  algorithm: SHA1
+  digits: SIX
+  type: TOTP
+  totpSecret: JBSWY3DPEHPK3PXP
+`)
+	outputPath := filepath.Join(dir, "store.sqlite")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"import-file", jsonPath, yamlPath, "--totp", outputPath})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "imported=2") || !strings.Contains(stdout.String(), "added=2") {
+		t.Fatalf("stdout = %q, want import-file summary", stdout.String())
+	}
+	assertProviderLabels(t, loadProviderDatabase(t, outputPath), []string{"GitHub/trezorg", "AWS/root"})
+}
+
+func TestRunImportFileDerivesDatabasePathFromFirstFile(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := writeImportFile(t, dir, "providers.json", singleProviderJSON())
+	dbPath := filepath.Join(dir, "providers.sqlite")
+
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+	code := app.Run([]string{"import-file", inputPath})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertProviderLabels(t, loadProviderDatabase(t, dbPath), []string{"GitHub/trezorg"})
+}
+
+func TestRunImportFileUsesExplicitFormat(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := writeImportFile(t, dir, "providers.txt", `- name: trezorg
+  issuer: GitHub
+  algorithm: SHA1
+  digits: SIX
+  type: TOTP
+  totpSecret: JBSWY3DPEHPK3PXP
+`)
+	outputPath := filepath.Join(dir, "providers.sqlite")
+
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+	code := app.Run([]string{"import-file", inputPath, "--format", "yaml", "--totp", outputPath})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	assertProviderLabels(t, loadProviderDatabase(t, outputPath), []string{"GitHub/trezorg"})
+}
+
+func TestRunImportReportsUsageAndImportErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string][]string{
+		"missing image": {"import"},
+		"bad flag":      {"import", "/tmp/export.png", "--format", "json"},
+	}
+
+	for name, args := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var stderr bytes.Buffer
+			app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+			code := app.Run(args)
+			if code != 2 {
+				t.Fatalf("Run exit code = %d, want 2", code)
+			}
+			if stderr.String() == "" {
+				t.Fatal("stderr is empty, want usage error")
+			}
+		})
+	}
+
+	t.Run("decode error", func(t *testing.T) {
+		t.Parallel()
+
+		var stderr bytes.Buffer
+		app := App{
+			Home:            t.TempDir(),
+			Stdout:          &bytes.Buffer{},
+			Stderr:          &stderr,
+			ImportQRDecoder: stubQRDecoder{err: fmt.Errorf("QR decode failed")},
+		}
+
+		code := app.Run([]string{"import", "/tmp/export.png", "--totp", filepath.Join(t.TempDir(), "providers.json")})
+		if code == 0 {
+			t.Fatal("Run exit code = 0, want error")
+		}
+		if !strings.Contains(stderr.String(), "QR decode failed") {
+			t.Fatalf("stderr = %q, want decode error", stderr.String())
+		}
+		if strings.Count(stderr.String(), "QR decode failed") != 1 {
+			t.Fatalf("stderr = %q, want decode error printed once", stderr.String())
+		}
+	})
 }
 
 func TestRunUsesEnvironmentSearchEngine(t *testing.T) {
@@ -345,15 +626,8 @@ func TestRunReportsInvalidNoTUIEnvironmentBeforeLoadingProviders(t *testing.T) {
 	}
 }
 
-func TestRunUsesEnvironmentFormat(t *testing.T) {
-	path := writeProviderFile(t, `[[providers]]
-name = "trezorg"
-issuer = "GitHub"
-algorithm = "SHA1"
-digits = "SIX"
-type = "TOTP"
-totpSecret = "JBSWY3DPEHPK3PXP"
-`, "providers.data")
+func TestRunIgnoresEnvironmentFormat(t *testing.T) {
+	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
 	t.Setenv("TOTPCLI_FORMAT", "toml")
 
 	var launched tui.Model
@@ -374,19 +648,16 @@ totpSecret = "JBSWY3DPEHPK3PXP"
 	assertLaunchedLabels(t, launched, []string{"GitHub/trezorg"})
 }
 
-func TestRunDefaultPathFollowsEnvironmentFormat(t *testing.T) {
+func TestRunDefaultPathUsesSQLiteDatabase(t *testing.T) {
 	home := t.TempDir()
-	path := filepath.Join(home, "totp.yaml")
-	if err := os.WriteFile(path, []byte(`- name: trezorg
-  issuer: GitHub
-  algorithm: SHA1
-  digits: SIX
-  type: TOTP
-  totpSecret: JBSWY3DPEHPK3PXP
-`), 0o600); err != nil {
-		t.Fatalf("write provider file: %v", err)
-	}
-	t.Setenv("TOTPCLI_FORMAT", "yaml")
+	seedProviderDatabase(t, filepath.Join(home, "totp.sqlite"), []provider.RawProvider{{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Algorithm:  "SHA1",
+		Digits:     "SIX",
+		Type:       "TOTP",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	}})
 
 	var launched tui.Model
 	app := App{
@@ -420,13 +691,14 @@ func TestRunHelpListsFlagsAndEnvironment(t *testing.T) {
 
 	help := stdout.String()
 	for _, want := range []string{
+		"totp",
+		"import",
+		"import-file",
 		"--totp",
-		"--format",
 		"--search",
 		"--search-engine",
 		"--no-tui",
 		"TOTPCLI_TOTP_PATH",
-		"TOTPCLI_FORMAT",
 		"TOTPCLI_SEARCH",
 		"TOTPCLI_SEARCH_ENGINE",
 		"TOTPCLI_NO_TUI",
@@ -434,6 +706,49 @@ func TestRunHelpListsFlagsAndEnvironment(t *testing.T) {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q:\n%s", want, help)
 		}
+	}
+}
+
+func TestRunSubcommandHelpListsRelevantFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string][]string{
+		"totp": {
+			"--totp",
+			"--search",
+			"--search-engine",
+			"--no-tui",
+		},
+		"import": {
+			"qr-image",
+			"--totp",
+			"SQLite",
+		},
+		"import-file": {
+			"provider-file",
+			"--totp",
+			"--format",
+		},
+	}
+
+	for command, wants := range tests {
+		t.Run(command, func(t *testing.T) {
+			t.Parallel()
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+			code := app.Run([]string{command, "--help"})
+			if code != 0 {
+				t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+			}
+			for _, want := range wants {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("%s help missing %q:\n%s", command, want, stdout.String())
+				}
+			}
+		})
 	}
 }
 
@@ -452,7 +767,7 @@ func TestRunReportsUnknownFlagUsageError(t *testing.T) {
 	}
 }
 
-func TestRunReportsInvalidFormat(t *testing.T) {
+func TestRunRejectsFormatFlagOnTOTPWorkflow(t *testing.T) {
 	t.Parallel()
 
 	var stderr bytes.Buffer
@@ -462,8 +777,8 @@ func TestRunReportsInvalidFormat(t *testing.T) {
 	if code == 0 {
 		t.Fatal("Run exit code = 0, want error")
 	}
-	if !strings.Contains(stderr.String(), "unsupported format") {
-		t.Fatalf("stderr = %q, want unsupported format error", stderr.String())
+	if !strings.Contains(stderr.String(), "unknown flag") {
+		t.Fatalf("stderr = %q, want unknown flag error", stderr.String())
 	}
 }
 
@@ -485,18 +800,27 @@ func TestRunReportsInvalidSearchEngineBeforeLoadingProviders(t *testing.T) {
 	}
 }
 
-func TestRunReportsMissingProviderFile(t *testing.T) {
+func TestRunCreatesMissingProviderDatabase(t *testing.T) {
 	t.Parallel()
 
 	var stderr bytes.Buffer
-	app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+	var launched tui.Model
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &stderr,
+		RunTUI: func(model tui.Model) error {
+			launched = model
+			return nil
+		},
+	}
 
 	code := app.Run([]string{"--totp", filepath.Join(t.TempDir(), "missing.json")})
-	if code == 0 {
-		t.Fatal("Run exit code = 0, want error")
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "read provider file") {
-		t.Fatalf("stderr = %q, want provider file error", stderr.String())
+	if len(launched.Filtered()) != 0 {
+		t.Fatalf("filtered = %#v, want no providers", launched.Filtered())
 	}
 }
 
@@ -706,6 +1030,58 @@ func assertLaunchedLabels(t *testing.T, model tui.Model, want []string) {
 	}
 }
 
+func assertProviderLabels(t *testing.T, providers []provider.Provider, want []string) {
+	t.Helper()
+
+	if len(providers) != len(want) {
+		t.Fatalf("len(providers) = %d, want %d: %#v", len(providers), len(want), providers)
+	}
+	for i := range want {
+		if got := providers[i].DisplayLabel(); got != want[i] {
+			t.Fatalf("providers[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+func loadProviderDatabase(t *testing.T, path string) []provider.Provider {
+	t.Helper()
+
+	repo, err := storage.OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("open provider database: %v", err)
+	}
+	defer func() {
+		if err := repo.Close(); err != nil {
+			t.Fatalf("close provider database: %v", err)
+		}
+	}()
+	providers, err := repo.ListProviders()
+	if err != nil {
+		t.Fatalf("list provider database: %v", err)
+	}
+	return providers
+}
+
+func seedProviderDatabase(t *testing.T, path string, providers []provider.RawProvider) {
+	t.Helper()
+
+	repo, err := storage.OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("open provider database: %v", err)
+	}
+	defer func() {
+		if err := repo.Close(); err != nil {
+			t.Fatalf("close provider database: %v", err)
+		}
+	}()
+	if err := repo.Init(); err != nil {
+		t.Fatalf("initialize provider database: %v", err)
+	}
+	if _, err := repo.UpsertProviders(providers); err != nil {
+		t.Fatalf("seed provider database: %v", err)
+	}
+}
+
 func writeProviderFile(t *testing.T, content string, name string) string {
 	t.Helper()
 
@@ -713,5 +1089,51 @@ func writeProviderFile(t *testing.T, content string, name string) string {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write provider file: %v", err)
 	}
+	raw, err := provider.ParseRaw([]byte(content), provider.DetectFormat(path))
+	if err != nil {
+		return path
+	}
+	dbPath, err := storage.ResolveDatabasePath(path, "", "")
+	if err != nil {
+		t.Fatalf("resolve provider database path: %v", err)
+	}
+	seedProviderDatabase(t, dbPath, raw)
 	return path
+}
+
+func writeImportFile(t *testing.T, dir string, name string, content string) string {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write import file: %v", err)
+	}
+	return path
+}
+
+func testMigrationURI(secret []byte, name string, issuer string) string {
+	var account []byte
+	account = protowire.AppendBytes(protowire.AppendTag(account, 1, protowire.BytesType), secret)
+	account = protowire.AppendString(protowire.AppendTag(account, 2, protowire.BytesType), name)
+	account = protowire.AppendString(protowire.AppendTag(account, 3, protowire.BytesType), issuer)
+	account = protowire.AppendVarint(protowire.AppendTag(account, 4, protowire.VarintType), 1)
+	account = protowire.AppendVarint(protowire.AppendTag(account, 5, protowire.VarintType), 1)
+	account = protowire.AppendVarint(protowire.AppendTag(account, 6, protowire.VarintType), 2)
+
+	var payload []byte
+	payload = protowire.AppendBytes(protowire.AppendTag(payload, 1, protowire.BytesType), account)
+	payload = protowire.AppendVarint(protowire.AppendTag(payload, 2, protowire.VarintType), 1)
+	return "otpauth-migration://offline?data=" + base64.StdEncoding.EncodeToString(payload)
+}
+
+type stubQRDecoder struct {
+	uri string
+	err error
+}
+
+func (s stubQRDecoder) Decode(string) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.uri, nil
 }

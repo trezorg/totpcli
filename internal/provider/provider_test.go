@@ -133,6 +133,25 @@ func TestLoadParsesJSONYAMLandTOML(t *testing.T) {
 	}
 }
 
+func TestLoadRawPreservesProviderFileFields(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join("testdata", "providers.json")
+	raw, err := LoadRaw(path, FormatJSON)
+	if err != nil {
+		t.Fatalf("LoadRaw returned error: %v", err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("len(raw) = %d, want 1", len(raw))
+	}
+	if raw[0].Digits != "SIX" {
+		t.Fatalf("Digits = %q, want SIX", raw[0].Digits)
+	}
+	if raw[0].TOTPSecret != "JBSWY3DPEHPK3PXP" {
+		t.Fatalf("TOTPSecret = %q, want fixture secret", raw[0].TOTPSecret)
+	}
+}
+
 func TestValidateProviderRejectsMissingSecret(t *testing.T) {
 	t.Parallel()
 

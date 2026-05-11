@@ -5,30 +5,54 @@ Define command parsing, environment variable configuration, precedence, and help
 ## Requirements
 
 ### Requirement: Cobra command parsing
-The CLI SHALL parse commands and flags through a Cobra root command named `totpcli`. The CLI SHALL preserve the existing `--totp`, `--format`, `--search`, and `--search-engine` flags and SHALL add a `--no-tui` flag.
+The CLI SHALL parse commands and flags through a Cobra root command named `totpcli`. The CLI SHALL preserve root invocation as the default TOTP display behavior, SHALL expose a `totp` subcommand for the same behavior, SHALL expose `--totp`, `--search`, `--search-engine`, and `--no-tui` flags for TOTP display behavior, SHALL expose an `import` subcommand for Google Authenticator QR provider import behavior, and SHALL expose an `import-file` subcommand for provider file import behavior. The CLI SHALL NOT expose `--format` on root invocation, the `totp` subcommand, or the `import` subcommand.
 
-#### Scenario: Existing flags still launch the TUI
-- **WHEN** the user starts the application with `--totp /tmp/providers.json --format json --search git`
-- **THEN** the CLI loads `/tmp/providers.json` as JSON and starts the TUI with `git` as the initial search text
+#### Scenario: Existing TOTP flags still launch the TUI
+- **WHEN** the user starts the application with `--totp /tmp/providers.sqlite --search git`
+- **THEN** the CLI loads providers from `/tmp/providers.sqlite` and starts the TUI with `git` as the initial search text
+
+#### Scenario: TOTP subcommand launches the TUI
+- **WHEN** the user starts the application with `totp --totp /tmp/providers.sqlite --search git`
+- **THEN** the CLI loads providers from `/tmp/providers.sqlite` and starts the TUI with `git` as the initial search text
 
 #### Scenario: Search engine flag selects engine
 - **WHEN** the user starts the application with `--search-engine lexical`
+- **THEN** the CLI starts the TUI with lexical provider search
+
+#### Scenario: TOTP subcommand search engine flag selects engine
+- **WHEN** the user starts the application with `totp --search-engine lexical`
 - **THEN** the CLI starts the TUI with lexical provider search
 
 #### Scenario: No TUI flag prints token output
 - **WHEN** the user starts the application with `--no-tui`
 - **THEN** the CLI loads providers and prints non-interactive token output instead of starting the TUI
 
+#### Scenario: TOTP subcommand no TUI flag prints token output
+- **WHEN** the user starts the application with `totp --no-tui`
+- **THEN** the CLI loads providers and prints non-interactive token output instead of starting the TUI
+
+#### Scenario: Import subcommand routes QR import behavior
+- **WHEN** the user starts the application with `import /tmp/export.jpg --totp /tmp/providers.sqlite`
+- **THEN** the CLI runs QR provider import behavior instead of starting the TUI
+
+#### Scenario: Import-file subcommand routes provider file import behavior
+- **WHEN** the user starts the application with `import-file /tmp/providers.yaml --format yaml --totp /tmp/providers.sqlite`
+- **THEN** the CLI imports providers from `/tmp/providers.yaml` into `/tmp/providers.sqlite`
+
+#### Scenario: Format flag is rejected on TOTP workflow
+- **WHEN** the user starts the application with `totp --format json`
+- **THEN** the CLI reports a command usage error and exits with a non-zero usage status
+
 #### Scenario: Unknown flag reports a usage error
 - **WHEN** the user starts the application with an unsupported flag
 - **THEN** the CLI reports a command usage error and exits with a non-zero usage status
 
 ### Requirement: Environment variable configuration
-The CLI SHALL support `TOTPCLI_TOTP_PATH`, `TOTPCLI_FORMAT`, `TOTPCLI_SEARCH`, `TOTPCLI_SEARCH_ENGINE`, and `TOTPCLI_NO_TUI` as environment variable fallbacks for provider path, provider format, initial search text, provider search engine, and non-interactive mode.
+The CLI SHALL support `TOTPCLI_TOTP_PATH`, `TOTPCLI_SEARCH`, `TOTPCLI_SEARCH_ENGINE`, and `TOTPCLI_NO_TUI` as environment variable fallbacks for provider database path, initial search text, provider search engine, and non-interactive mode. The CLI SHALL NOT support `TOTPCLI_FORMAT` for root invocation, the `totp` subcommand, or the `import` subcommand.
 
-#### Scenario: Provider path comes from environment
+#### Scenario: Provider database path comes from environment
 - **WHEN** `TOTPCLI_TOTP_PATH` is set and the user does not provide `--totp`
-- **THEN** the CLI uses `TOTPCLI_TOTP_PATH` as the provider file path
+- **THEN** the CLI uses `TOTPCLI_TOTP_PATH` as the provider database path input
 
 #### Scenario: Initial search comes from environment
 - **WHEN** `TOTPCLI_SEARCH` is set and the user does not provide `--search`
@@ -43,7 +67,7 @@ The CLI SHALL support `TOTPCLI_TOTP_PATH`, `TOTPCLI_FORMAT`, `TOTPCLI_SEARCH`, `
 - **THEN** the CLI prints non-interactive token output instead of starting the TUI
 
 ### Requirement: Configuration precedence
-The CLI SHALL resolve configuration using command-line flags first, environment variables second, and built-in defaults third.
+The CLI SHALL resolve configuration using command-line flags first, environment variables second, and built-in or input-derived defaults third.
 
 #### Scenario: Flag overrides environment variable
 - **WHEN** `TOTPCLI_SEARCH` is set to `aws` and the user starts the application with `--search git`
@@ -53,9 +77,13 @@ The CLI SHALL resolve configuration using command-line flags first, environment 
 - **WHEN** `TOTPCLI_SEARCH_ENGINE` is set to `lexical` and the user starts the application with `--search-engine digram`
 - **THEN** the CLI starts the TUI with digram provider search
 
-#### Scenario: Environment variable overrides default
-- **WHEN** `TOTPCLI_FORMAT` is set to `toml` and the user does not provide `--format`
-- **THEN** the CLI resolves the provider file format as TOML
+#### Scenario: Provider database flag overrides environment database path
+- **WHEN** `TOTPCLI_TOTP_PATH` is set to `/tmp/env.sqlite` and the user starts the application with `--totp /tmp/flag.sqlite`
+- **THEN** the CLI uses `/tmp/flag.sqlite` as the provider database path
+
+#### Scenario: Environment variable overrides default database path
+- **WHEN** `TOTPCLI_TOTP_PATH` is set to `/tmp/env.sqlite` and the user does not provide `--totp`
+- **THEN** the CLI uses `/tmp/env.sqlite` as the provider database path
 
 #### Scenario: Default search engine is digram
 - **WHEN** the user does not provide `--search-engine` and `TOTPCLI_SEARCH_ENGINE` is unset
@@ -70,15 +98,31 @@ The CLI SHALL resolve configuration using command-line flags first, environment 
 - **THEN** the CLI starts the TUI
 
 ### Requirement: Cobra help output
-The CLI SHALL provide Cobra-generated help output that documents available flags and related environment variables.
+The CLI SHALL provide Cobra-generated help output that documents available commands, flags, and related environment variables.
 
-#### Scenario: Help output lists supported flags
+#### Scenario: Help output lists supported commands
 - **WHEN** the user starts the application with `--help`
-- **THEN** the CLI prints help output that includes `--totp`, `--format`, `--search`, `--search-engine`, and `--no-tui`
+- **THEN** the CLI prints help output that includes the `totp`, `import`, and `import-file` commands
+
+#### Scenario: Help output lists supported TOTP flags
+- **WHEN** the user starts the application with `--help`
+- **THEN** the CLI prints help output that includes `--totp`, `--search`, `--search-engine`, and `--no-tui`, and does not include `--format`
+
+#### Scenario: TOTP subcommand help lists supported TOTP flags
+- **WHEN** the user starts the application with `totp --help`
+- **THEN** the CLI prints help output that includes `--totp`, `--search`, `--search-engine`, and `--no-tui`, and does not include `--format`
+
+#### Scenario: Import subcommand help lists import options
+- **WHEN** the user starts the application with `import --help`
+- **THEN** the CLI prints help output that includes the QR image argument, `--totp`, and SQLite import behavior, and does not include `--format`
+
+#### Scenario: Import-file subcommand help lists import-file options
+- **WHEN** the user starts the application with `import-file --help`
+- **THEN** the CLI prints help output that includes provider file arguments, `--totp`, and `--format`
 
 #### Scenario: Help output lists environment variables
 - **WHEN** the user starts the application with `--help`
-- **THEN** the CLI help output includes `TOTPCLI_TOTP_PATH`, `TOTPCLI_FORMAT`, `TOTPCLI_SEARCH`, `TOTPCLI_SEARCH_ENGINE`, and `TOTPCLI_NO_TUI`
+- **THEN** the CLI help output includes `TOTPCLI_TOTP_PATH`, `TOTPCLI_SEARCH`, `TOTPCLI_SEARCH_ENGINE`, and `TOTPCLI_NO_TUI`
 
 ### Requirement: Search engine configuration validation
 The CLI SHALL validate the resolved search engine name before loading the TUI. Supported values SHALL include `digram` and `lexical`.

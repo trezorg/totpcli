@@ -123,8 +123,32 @@ func Load(path string, format Format) ([]Provider, error) {
 }
 
 func Parse(data []byte, format Format) ([]Provider, error) {
-	var raw []RawProvider
+	raw, err := ParseRaw(data, format)
+	if err != nil {
+		return nil, err
+	}
 
+	providers := make([]Provider, 0, len(raw))
+	for i, record := range raw {
+		provider, err := Normalize(record)
+		if err != nil {
+			return nil, fmt.Errorf("provider %d: %w", i+1, err)
+		}
+		providers = append(providers, provider)
+	}
+	return providers, nil
+}
+
+func LoadRaw(path string, format Format) ([]RawProvider, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read provider file %q: %w", path, err)
+	}
+	return ParseRaw(data, format)
+}
+
+func ParseRaw(data []byte, format Format) ([]RawProvider, error) {
+	var raw []RawProvider
 	switch format {
 	case FormatJSON:
 		if err := json.Unmarshal(data, &raw); err != nil {
@@ -145,16 +169,7 @@ func Parse(data []byte, format Format) ([]Provider, error) {
 	default:
 		return nil, fmt.Errorf("unsupported provider format %q", format)
 	}
-
-	providers := make([]Provider, 0, len(raw))
-	for i, record := range raw {
-		provider, err := Normalize(record)
-		if err != nil {
-			return nil, fmt.Errorf("provider %d: %w", i+1, err)
-		}
-		providers = append(providers, provider)
-	}
-	return providers, nil
+	return raw, nil
 }
 
 func Normalize(raw RawProvider) (Provider, error) {

@@ -1,76 +1,60 @@
 ## Purpose
 
-Define how TOTP provider files are located, parsed, validated, and normalized before the application starts the TUI.
+Define how TOTP provider storage is located and how imported provider files are parsed, validated, and normalized.
 
 ## Requirements
 
 ### Requirement: Provider file path resolution
-The system SHALL accept a `--totp` CLI parameter that sets the TOTP provider file path. When `--totp` is absent and `TOTPCLI_TOTP_PATH` is set, the system SHALL use `TOTPCLI_TOTP_PATH` as the provider file path. When both `--totp` and `TOTPCLI_TOTP_PATH` are absent, the system SHALL use `~/totp.<format>`, where `<format>` is the effective explicit format value from `--format` or `TOTPCLI_FORMAT`, or `json` when no format is provided.
+The system SHALL accept a `--totp` CLI parameter that sets the TOTP provider database path input. When `--totp` is absent and `TOTPCLI_TOTP_PATH` is set, the system SHALL use `TOTPCLI_TOTP_PATH` as the provider database path input. When both `--totp` and `TOTPCLI_TOTP_PATH` are absent for TOTP display behavior, the system SHALL use `~/totp.sqlite`.
 
-#### Scenario: Explicit provider path is used
-- **WHEN** the user starts the application with `--totp /tmp/providers.yaml --format yaml`
-- **THEN** the system loads providers from `/tmp/providers.yaml`
+#### Scenario: Explicit provider database path is used
+- **WHEN** the user starts the application with `--totp /tmp/providers.sqlite`
+- **THEN** the system loads providers from `/tmp/providers.sqlite`
 
-#### Scenario: Environment provider path is used
-- **WHEN** `TOTPCLI_TOTP_PATH` is set to `/tmp/providers.toml` and the user starts the application without `--totp`
-- **THEN** the system loads providers from `/tmp/providers.toml`
+#### Scenario: Environment provider database path is used
+- **WHEN** `TOTPCLI_TOTP_PATH` is set to `/tmp/providers.sqlite` and the user starts the application without `--totp`
+- **THEN** the system loads providers from `/tmp/providers.sqlite`
 
-#### Scenario: Flag provider path overrides environment provider path
-- **WHEN** `TOTPCLI_TOTP_PATH` is set to `/tmp/env.json` and the user starts the application with `--totp /tmp/flag.json`
-- **THEN** the system loads providers from `/tmp/flag.json`
+#### Scenario: Flag provider database path overrides environment provider database path
+- **WHEN** `TOTPCLI_TOTP_PATH` is set to `/tmp/env.sqlite` and the user starts the application with `--totp /tmp/flag.sqlite`
+- **THEN** the system loads providers from `/tmp/flag.sqlite`
 
-#### Scenario: Default JSON provider path is used
-- **WHEN** the user starts the application without `--totp`, without `--format`, and without related environment variables
-- **THEN** the system loads providers from `~/totp.json`
-
-#### Scenario: Default path follows explicit format
-- **WHEN** the user starts the application with `--format toml` and without `--totp`
-- **THEN** the system loads providers from `~/totp.toml`
-
-#### Scenario: Default path follows environment format
-- **WHEN** `TOTPCLI_FORMAT` is set to `yaml` and the user starts the application without `--totp` and without `--format`
-- **THEN** the system loads providers from `~/totp.yaml`
+#### Scenario: Default SQLite provider path is used
+- **WHEN** the user starts the application without `--totp` and without related environment variables
+- **THEN** the system loads providers from `~/totp.sqlite`
 
 ### Requirement: Provider file format resolution
-The system SHALL accept `--format json|yaml|toml` and `TOTPCLI_FORMAT=json|yaml|toml`. When `--format` is present, it SHALL override `TOTPCLI_FORMAT`. When neither is present, the system SHALL detect the provider file format from a `.json`, `.yaml`, `.yml`, or `.toml` extension and SHALL fall back to JSON when no known extension is present.
+The system SHALL accept `--format json|yaml|toml` on the `import-file` command. When `--format` is present, it SHALL apply to every input file and override extension-based detection. When `--format` is absent, the system SHALL detect each provider file format from a `.json`, `.yaml`, `.yml`, or `.toml` extension and SHALL fall back to JSON when no known extension is present.
 
-#### Scenario: Explicit format overrides path extension
-- **WHEN** the user starts the application with `--totp ~/totp.txt --format yaml`
-- **THEN** the system parses the provider file as YAML
-
-#### Scenario: Explicit format overrides environment format
-- **WHEN** `TOTPCLI_FORMAT` is set to `json` and the user starts the application with `--totp ~/totp.txt --format yaml`
-- **THEN** the system parses the provider file as YAML
-
-#### Scenario: Environment format overrides path extension
-- **WHEN** `TOTPCLI_FORMAT` is set to `yaml` and the user starts the application with `--totp ~/totp.txt` and without `--format`
-- **THEN** the system parses the provider file as YAML
+#### Scenario: Explicit import-file format overrides path extension
+- **WHEN** the user starts the application with `import-file ~/totp.txt --format yaml`
+- **THEN** the system parses `~/totp.txt` as YAML before importing providers into SQLite
 
 #### Scenario: Format is detected from extension
-- **WHEN** the user starts the application with `--totp ~/totp.toml` and without `--format`
-- **THEN** the system parses the provider file as TOML
+- **WHEN** the user starts the application with `import-file ~/totp.toml` and without `--format`
+- **THEN** the system parses `~/totp.toml` as TOML before importing providers into SQLite
 
 #### Scenario: Unknown extension falls back to JSON
-- **WHEN** the user starts the application with `--totp ~/totp.data` and without `--format`
-- **THEN** the system parses the provider file as JSON
+- **WHEN** the user starts the application with `import-file ~/totp.data` and without `--format`
+- **THEN** the system parses `~/totp.data` as JSON before importing providers into SQLite
 
 ### Requirement: Provider data parsing
-The system SHALL parse provider files containing an array of provider records. Each provider record SHALL support `secret`, `name`, `issuer`, `algorithm`, `digits`, `type`, and `totpSecret` fields.
+The system SHALL parse imported provider files containing an array of provider records. Each provider record SHALL support `secret`, `name`, `issuer`, `algorithm`, `digits`, `type`, and `totpSecret` fields.
 
 #### Scenario: JSON provider file is parsed
-- **WHEN** the provider file contains a JSON array with provider records
+- **WHEN** an imported provider file contains a JSON array with provider records
 - **THEN** the system returns the parsed provider records
 
 #### Scenario: YAML provider file is parsed
-- **WHEN** the provider file contains a YAML sequence with provider records
+- **WHEN** an imported provider file contains a YAML sequence with provider records
 - **THEN** the system returns the parsed provider records
 
 #### Scenario: TOML provider file is parsed
-- **WHEN** the provider file contains TOML array-of-table provider records
+- **WHEN** an imported provider file contains TOML array-of-table provider records
 - **THEN** the system returns the parsed provider records
 
 ### Requirement: Provider validation and normalization
-The system SHALL validate provider records before starting the TUI. The system SHALL require `totpSecret`, SHALL require `type` to be absent or `TOTP`, SHALL require at least one of `issuer` or `name`, SHALL normalize supported algorithms, and SHALL normalize `digits` values including `SIX`, `EIGHT`, `6`, and `8`.
+The system SHALL validate provider records before storing them in SQLite or generating TOTP codes. The system SHALL require `totpSecret`, SHALL require `type` to be absent or `TOTP`, SHALL require at least one of `issuer` or `name`, SHALL normalize supported algorithms, and SHALL normalize `digits` values including `SIX`, `EIGHT`, `6`, and `8`.
 
 #### Scenario: Valid provider is normalized
 - **WHEN** a provider has `type` set to `TOTP`, `algorithm` set to `SHA1`, `digits` set to `SIX`, and a `totpSecret`
