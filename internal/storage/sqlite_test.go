@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/base64"
 	"path/filepath"
 	"testing"
 
@@ -186,6 +187,54 @@ func TestSQLiteRepositoryRollsBackInvalidImport(t *testing.T) {
 	}
 	if len(providers) != 1 || providers[0].DisplayLabel() != "GitHub/trezorg" {
 		t.Fatalf("providers = %#v, want original provider only", providers)
+	}
+}
+
+func TestSQLiteRepositoryInspectsTables(t *testing.T) {
+	t.Parallel()
+
+	repo := openTestSQLite(t)
+	if _, err := repo.db.Exec(`
+CREATE TABLE audit (
+	id INTEGER PRIMARY KEY,
+	name TEXT NOT NULL,
+	score REAL NOT NULL,
+	payload BLOB,
+	missing TEXT
+);
+INSERT INTO audit (id, name, score, payload, missing) VALUES
+	(2, 'second', 7.5, x'6869', NULL),
+	(1, 'first', 3.25, x'627965', 'present');`); err != nil {
+		t.Fatalf("seed audit table: %v", err)
+	}
+
+	tables, err := repo.InspectTables()
+	if err != nil {
+		t.Fatalf("InspectTables returned error: %v", err)
+	}
+
+	if len(tables) != 2 {
+		t.Fatalf("len(tables) = %d, want 2: %#v", len(tables), tables)
+	}
+	if tables[0].Name != "audit" || tables[1].Name != "providers" {
+		t.Fatalf("table order = %q, %q; want audit, providers", tables[0].Name, tables[1].Name)
+	}
+	if tables[0].Columns[0] != "id" || tables[0].Columns[1] != "name" || tables[0].Columns[2] != "score" || tables[0].Columns[3] != "payload" || tables[0].Columns[4] != "missing" {
+		t.Fatalf("audit columns = %#v, want id/name/score/payload/missing", tables[0].Columns)
+	}
+	if len(tables[0].Rows) != 2 {
+		t.Fatalf("len(audit rows) = %d, want 2", len(tables[0].Rows))
+	}
+	first := tables[0].Rows[0]
+	if first["id"] != int64(1) || first["name"] != "first" || first["score"] != 3.25 || first["payload"] != base64.StdEncoding.EncodeToString([]byte("bye")) || first["missing"] != "present" {
+		t.Fatalf("first audit row = %#v, want normalized values", first)
+	}
+	second := tables[0].Rows[1]
+	if second["id"] != int64(2) || second["name"] != "second" || second["score"] != 7.5 || second["payload"] != base64.StdEncoding.EncodeToString([]byte("hi")) || second["missing"] != nil {
+		t.Fatalf("second audit row = %#v, want normalized values with nil missing", second)
+	}
+	if len(tables[1].Rows) != 0 {
+		t.Fatalf("providers rows = %#v, want empty providers table", tables[1].Rows)
 	}
 }
 

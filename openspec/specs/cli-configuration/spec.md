@@ -5,7 +5,7 @@ Define command parsing, environment variable configuration, precedence, and help
 ## Requirements
 
 ### Requirement: Cobra command parsing
-The CLI SHALL parse commands and flags through a Cobra root command named `totpcli`. The CLI SHALL preserve root invocation as the default TOTP display behavior, SHALL expose a `totp` subcommand for the same behavior, SHALL expose `--totp`, `--search`, `--search-engine`, and `--no-tui` flags for TOTP display behavior, SHALL expose an `import` subcommand for Google Authenticator QR provider import behavior, and SHALL expose an `import-file` subcommand for provider file import behavior. The CLI SHALL NOT expose `--format` on root invocation, the `totp` subcommand, or the `import` subcommand.
+The CLI SHALL parse commands and flags through a Cobra root command named `totpcli`. The CLI SHALL preserve root invocation as the default TOTP display behavior, SHALL expose a `totp` subcommand for the same behavior, SHALL expose `--totp`, `--search`, `--search-engine`, and `--no-tui` flags for TOTP display behavior, SHALL expose an `import` subcommand for Google Authenticator QR provider import behavior, SHALL expose an `import-file` subcommand for provider file import behavior, and SHALL expose a `show` subcommand for SQLite table inspection behavior. The CLI SHALL expose `--format` only on subcommands that define format-specific behavior, including `import-file` and `show`. The CLI SHALL NOT expose `--format` on root invocation, the `totp` subcommand, or the `import` subcommand.
 
 #### Scenario: Existing TOTP flags still launch the TUI
 - **WHEN** the user starts the application with `--totp /tmp/providers.sqlite --search git`
@@ -38,6 +38,10 @@ The CLI SHALL parse commands and flags through a Cobra root command named `totpc
 #### Scenario: Import-file subcommand routes provider file import behavior
 - **WHEN** the user starts the application with `import-file /tmp/providers.yaml --format yaml --totp /tmp/providers.sqlite`
 - **THEN** the CLI imports providers from `/tmp/providers.yaml` into `/tmp/providers.sqlite`
+
+#### Scenario: Show subcommand routes SQLite inspection behavior
+- **WHEN** the user starts the application with `show --format json --totp /tmp/providers.sqlite`
+- **THEN** the CLI outputs SQLite table data from `/tmp/providers.sqlite` as JSON
 
 #### Scenario: Format flag is rejected on TOTP workflow
 - **WHEN** the user starts the application with `totp --format json`
@@ -102,7 +106,7 @@ The CLI SHALL provide Cobra-generated help output that documents available comma
 
 #### Scenario: Help output lists supported commands
 - **WHEN** the user starts the application with `--help`
-- **THEN** the CLI prints help output that includes the `totp`, `import`, and `import-file` commands
+- **THEN** the CLI prints help output that includes the `totp`, `import`, `import-file`, and `show` commands
 
 #### Scenario: Help output lists supported TOTP flags
 - **WHEN** the user starts the application with `--help`
@@ -119,6 +123,10 @@ The CLI SHALL provide Cobra-generated help output that documents available comma
 #### Scenario: Import-file subcommand help lists import-file options
 - **WHEN** the user starts the application with `import-file --help`
 - **THEN** the CLI prints help output that includes provider file arguments, `--totp`, and `--format`
+
+#### Scenario: Show subcommand help lists show options
+- **WHEN** the user starts the application with `show --help`
+- **THEN** the CLI prints help output that includes SQLite table inspection behavior, `--totp`, and `--format`
 
 #### Scenario: Help output lists environment variables
 - **WHEN** the user starts the application with `--help`

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,12 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
 	"github.com/trezorg/totpcli/internal/provider"
 	"github.com/trezorg/totpcli/internal/search/lexical"
 	"github.com/trezorg/totpcli/internal/storage"
 	"github.com/trezorg/totpcli/internal/totpcode"
 	"github.com/trezorg/totpcli/internal/tui"
 	"google.golang.org/protobuf/encoding/protowire"
+	"gopkg.in/yaml.v3"
 )
 
 func TestRunLoadsProvidersAndLaunchesTUIWithSearch(t *testing.T) {
@@ -381,6 +384,91 @@ func TestRunImportFileUsesExplicitFormat(t *testing.T) {
 	assertProviderLabels(t, loadProviderDatabase(t, outputPath), []string{"GitHub/trezorg"})
 }
 
+func TestRunShowSubcommandOutputsJSONTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	seedProviderDatabase(t, path, []provider.RawProvider{{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Algorithm:  "SHA1",
+		Digits:     "SIX",
+		Type:       "TOTP",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	}})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"show", "--totp", path, "--format", "json"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	var decoded struct {
+		Tables []storage.TableSnapshot `json:"tables"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("show json did not parse: %v\n%s", err, stdout.String())
+	}
+	if len(decoded.Tables) != 1 || decoded.Tables[0].Name != "providers" {
+		t.Fatalf("tables = %#v, want providers table only", decoded.Tables)
+	}
+	if len(decoded.Tables[0].Rows) != 1 || decoded.Tables[0].Rows[0]["issuer"] != "GitHub" {
+		t.Fatalf("provider rows = %#v, want GitHub provider", decoded.Tables[0].Rows)
+	}
+}
+
+func TestRunShowDefaultsToTableOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	seedProviderDatabase(t, path, []provider.RawProvider{{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Algorithm:  "SHA1",
+		Digits:     "SIX",
+		Type:       "TOTP",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	}})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"show", "--totp", path})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	for _, want := range []string{"providers", "issuer", "GitHub", "+", "|"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "sqlite_sequence") {
+		t.Fatalf("stdout = %q, want internal SQLite table excluded", stdout.String())
+	}
+}
+
+func TestRunShowRejectsUnsupportedFormatBeforeLoadingDatabase(t *testing.T) {
+	t.Parallel()
+
+	var stderr bytes.Buffer
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &stderr,
+		NewRepository: func(string) (providerRepository, error) {
+			t.Fatal("NewRepository called before show format validation")
+			return nil, nil
+		},
+	}
+
+	code := app.Run([]string{"show", "--totp", filepath.Join(t.TempDir(), "missing.sqlite"), "--format", "csv"})
+	if code != 2 {
+		t.Fatalf("Run exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "unsupported show format") {
+		t.Fatalf("stderr = %q, want unsupported show format error", stderr.String())
+	}
+}
+
 func TestRunImportReportsUsageAndImportErrors(t *testing.T) {
 	t.Parallel()
 
@@ -694,6 +782,7 @@ func TestRunHelpListsFlagsAndEnvironment(t *testing.T) {
 		"totp",
 		"import",
 		"import-file",
+		"show",
 		"--totp",
 		"--search",
 		"--search-engine",
@@ -726,6 +815,11 @@ func TestRunSubcommandHelpListsRelevantFlags(t *testing.T) {
 		},
 		"import-file": {
 			"provider-file",
+			"--totp",
+			"--format",
+		},
+		"show": {
+			"SQLite",
 			"--totp",
 			"--format",
 		},
@@ -770,15 +864,26 @@ func TestRunReportsUnknownFlagUsageError(t *testing.T) {
 func TestRunRejectsFormatFlagOnTOTPWorkflow(t *testing.T) {
 	t.Parallel()
 
-	var stderr bytes.Buffer
-	app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
-
-	code := app.Run([]string{"--format", "xml"})
-	if code == 0 {
-		t.Fatal("Run exit code = 0, want error")
+	tests := map[string][]string{
+		"root": {"--format", "xml"},
+		"totp": {"totp", "--format", "xml"},
 	}
-	if !strings.Contains(stderr.String(), "unknown flag") {
-		t.Fatalf("stderr = %q, want unknown flag error", stderr.String())
+
+	for name, args := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var stderr bytes.Buffer
+			app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+			code := app.Run(args)
+			if code == 0 {
+				t.Fatal("Run exit code = 0, want error")
+			}
+			if !strings.Contains(stderr.String(), "unknown flag") {
+				t.Fatalf("stderr = %q, want unknown flag error", stderr.String())
+			}
+		})
 	}
 }
 
@@ -954,6 +1059,138 @@ func TestRunNoTUIFilteredOutInvalidProviderDoesNotFailCommand(t *testing.T) {
 	}
 }
 
+func TestParseShowFormat(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]showFormat{
+		"":       showFormatTable,
+		"table":  showFormatTable,
+		"json":   showFormatJSON,
+		"yaml":   showFormatYAML,
+		"toml":   showFormatTOML,
+		" JSON ": showFormatJSON,
+	}
+	for input, want := range tests {
+		t.Run(input, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseShowFormat(input)
+			if err != nil {
+				t.Fatalf("parseShowFormat returned error: %v", err)
+			}
+			if got != want {
+				t.Fatalf("parseShowFormat(%q) = %q, want %q", input, got, want)
+			}
+		})
+	}
+
+	if _, err := parseShowFormat("csv"); err == nil {
+		t.Fatal("parseShowFormat returned nil error for unsupported format")
+	}
+}
+
+func TestRenderShowTables(t *testing.T) {
+	t.Parallel()
+
+	tables := []storage.TableSnapshot{{
+		Name:    "providers",
+		Columns: []string{"id", "issuer", "missing"},
+		Rows: []map[string]any{{
+			"id":      int64(1),
+			"issuer":  "GitHub",
+			"missing": nil,
+		}},
+	}}
+
+	t.Run("table", func(t *testing.T) {
+		t.Parallel()
+
+		var output bytes.Buffer
+		if err := renderShowTables(&output, tables, showFormatTable); err != nil {
+			t.Fatalf("renderShowTables returned error: %v", err)
+		}
+		got := output.String()
+		for _, want := range []string{"providers", "id", "issuer", "missing", "GitHub", "|", "+"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("table output missing %q:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		t.Parallel()
+
+		var output bytes.Buffer
+		if err := renderShowTables(&output, tables, showFormatJSON); err != nil {
+			t.Fatalf("renderShowTables returned error: %v", err)
+		}
+		var decoded struct {
+			Tables []storage.TableSnapshot `json:"tables"`
+		}
+		if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+			t.Fatalf("json output did not parse: %v\n%s", err, output.String())
+		}
+		assertRenderedShowTables(t, decoded.Tables)
+	})
+
+	t.Run("yaml", func(t *testing.T) {
+		t.Parallel()
+
+		var output bytes.Buffer
+		if err := renderShowTables(&output, tables, showFormatYAML); err != nil {
+			t.Fatalf("renderShowTables returned error: %v", err)
+		}
+		var decoded struct {
+			Tables []storage.TableSnapshot `yaml:"tables"`
+		}
+		if err := yaml.Unmarshal(output.Bytes(), &decoded); err != nil {
+			t.Fatalf("yaml output did not parse: %v\n%s", err, output.String())
+		}
+		assertRenderedShowTables(t, decoded.Tables)
+	})
+
+	t.Run("toml", func(t *testing.T) {
+		t.Parallel()
+
+		var output bytes.Buffer
+		if err := renderShowTables(&output, tables, showFormatTOML); err != nil {
+			t.Fatalf("renderShowTables returned error: %v", err)
+		}
+		var decoded struct {
+			Tables []struct {
+				Name    string   `toml:"name"`
+				Columns []string `toml:"columns"`
+				Rows    []struct {
+					Values []struct {
+						Column string `toml:"column"`
+						Value  string `toml:"value"`
+						Null   bool   `toml:"null"`
+					} `toml:"values"`
+				} `toml:"rows"`
+			} `toml:"tables"`
+		}
+		if err := toml.Unmarshal(output.Bytes(), &decoded); err != nil {
+			t.Fatalf("toml output did not parse: %v\n%s", err, output.String())
+		}
+		if len(decoded.Tables) != 1 {
+			t.Fatalf("len(tables) = %d, want 1: %#v", len(decoded.Tables), decoded.Tables)
+		}
+		table := decoded.Tables[0]
+		if table.Name != "providers" || strings.Join(table.Columns, ",") != "id,issuer,missing" {
+			t.Fatalf("decoded table = %#v, want providers with id/issuer/missing", table)
+		}
+		if len(table.Rows) != 1 || len(table.Rows[0].Values) != 3 {
+			t.Fatalf("decoded rows = %#v, want one row with three values", table.Rows)
+		}
+		if table.Rows[0].Values[1].Column != "issuer" || table.Rows[0].Values[1].Value != "GitHub" {
+			t.Fatalf("issuer cell = %#v, want issuer=GitHub", table.Rows[0].Values[1])
+		}
+		if table.Rows[0].Values[2].Column != "missing" || !table.Rows[0].Values[2].Null {
+			t.Fatalf("missing cell = %#v, want null missing", table.Rows[0].Values[2])
+		}
+	})
+}
+
 func singleProviderJSON() string {
 	return `[
   {
@@ -1040,6 +1277,30 @@ func assertProviderLabels(t *testing.T, providers []provider.Provider, want []st
 		if got := providers[i].DisplayLabel(); got != want[i] {
 			t.Fatalf("providers[%d] = %q, want %q", i, got, want[i])
 		}
+	}
+}
+
+func assertRenderedShowTables(t *testing.T, tables []storage.TableSnapshot) {
+	t.Helper()
+
+	if len(tables) != 1 {
+		t.Fatalf("len(tables) = %d, want 1: %#v", len(tables), tables)
+	}
+	table := tables[0]
+	if table.Name != "providers" {
+		t.Fatalf("table name = %q, want providers", table.Name)
+	}
+	if strings.Join(table.Columns, ",") != "id,issuer,missing" {
+		t.Fatalf("columns = %#v, want id/issuer/missing", table.Columns)
+	}
+	if len(table.Rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(table.Rows))
+	}
+	if table.Rows[0]["issuer"] != "GitHub" {
+		t.Fatalf("issuer = %#v, want GitHub", table.Rows[0]["issuer"])
+	}
+	if table.Rows[0]["missing"] != nil {
+		t.Fatalf("missing = %#v, want nil", table.Rows[0]["missing"])
 	}
 }
 

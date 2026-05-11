@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 	"github.com/trezorg/totpcli/internal/importer"
 	"github.com/trezorg/totpcli/internal/provider"
@@ -19,11 +21,21 @@ import (
 	"github.com/trezorg/totpcli/internal/storage"
 	"github.com/trezorg/totpcli/internal/totpcode"
 	"github.com/trezorg/totpcli/internal/tui"
+	"gopkg.in/yaml.v3"
 )
 
 const (
 	searchEngineDigram  = "digram"
 	searchEngineLexical = "lexical"
+)
+
+type showFormat string
+
+const (
+	showFormatTable showFormat = "table"
+	showFormatJSON  showFormat = "json"
+	showFormatYAML  showFormat = "yaml"
+	showFormatTOML  showFormat = "toml"
 )
 
 type App struct {
@@ -47,6 +59,7 @@ type totpOptions struct {
 type providerRepository interface {
 	Init() error
 	ListProviders() ([]provider.Provider, error)
+	InspectTables() ([]storage.TableSnapshot, error)
 	UpsertProviders([]provider.RawProvider) (storage.ImportResult, error)
 	Close() error
 }
@@ -63,6 +76,10 @@ func (a App) Run(args []string) int {
 		path   string
 		format string
 	}{}
+	showOpts := struct {
+		path   string
+		format string
+	}{format: string(showFormatTable)}
 	exitCode := 0
 	runTOTP := func(cmd *cobra.Command, _ []string) error {
 		code, err := a.runTOTP(cmd, stdout, totpOpts)
@@ -166,7 +183,48 @@ replacing its extension with .sqlite. Duplicate providers are overridden.`,
 	importFileCmd.Flags().StringVar(&importFileOpts.path, "totp", "", "Output SQLite provider database path (env TOTPCLI_TOTP_PATH)")
 	importFileCmd.Flags().StringVar(&importFileOpts.format, "format", "", "Provider file format: json, yaml, or toml")
 
-	cmd.AddCommand(totpCmd, importCmd, importFileCmd)
+	showCmd := &cobra.Command{
+		Use:   "show",
+		Short: "Show SQLite provider database tables",
+		Long: `Show every non-internal SQLite table in the resolved provider database.
+
+When --totp is omitted, show reads the default provider database path.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			format, err := parseShowFormat(showOpts.format)
+			if err != nil {
+				exitCode = 2
+				return err
+			}
+			effectivePath := effectiveString(cmd, "totp", showOpts.path, "TOTPCLI_TOTP_PATH")
+			dbPath, err := storage.ResolveDatabasePath(effectivePath, filepath.Join("~", "totp.sqlite"), a.Home)
+			if err != nil {
+				exitCode = 2
+				return err
+			}
+			repo, err := a.openRepository(dbPath)
+			if err != nil {
+				exitCode = 1
+				return err
+			}
+			defer func() {
+				_ = repo.Close()
+			}()
+			tables, err := repo.InspectTables()
+			if err != nil {
+				exitCode = 1
+				return err
+			}
+			if err := renderShowTables(stdout, tables, format); err != nil {
+				exitCode = 1
+				return err
+			}
+			return nil
+		},
+	}
+	showCmd.Flags().StringVar(&showOpts.path, "totp", "", "SQLite provider database path (env TOTPCLI_TOTP_PATH)")
+	showCmd.Flags().StringVar(&showOpts.format, "format", string(showFormatTable), "Show output format: table, json, yaml, or toml")
+
+	cmd.AddCommand(totpCmd, importCmd, importFileCmd, showCmd)
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
@@ -367,4 +425,128 @@ func printTokens(output io.Writer, providers []provider.Provider, generator totp
 		return fmt.Errorf("write token output: %w", err)
 	}
 	return nil
+}
+
+type showOutput struct {
+	Tables []storage.TableSnapshot `json:"tables" yaml:"tables" toml:"tables"`
+}
+
+type tomlShowOutput struct {
+	Tables []tomlTableSnapshot `toml:"tables"`
+}
+
+type tomlTableSnapshot struct {
+	Name    string         `toml:"name"`
+	Columns []string       `toml:"columns"`
+	Rows    []tomlTableRow `toml:"rows"`
+}
+
+type tomlTableRow struct {
+	Values []tomlTableCell `toml:"values"`
+}
+
+type tomlTableCell struct {
+	Column string `toml:"column"`
+	Value  string `toml:"value,omitempty"`
+	Null   bool   `toml:"null,omitempty"`
+}
+
+func parseShowFormat(format string) (showFormat, error) {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", string(showFormatTable):
+		return showFormatTable, nil
+	case string(showFormatJSON):
+		return showFormatJSON, nil
+	case string(showFormatYAML):
+		return showFormatYAML, nil
+	case string(showFormatTOML):
+		return showFormatTOML, nil
+	default:
+		return "", fmt.Errorf("unsupported show format %q: expected table, json, yaml, or toml", format)
+	}
+}
+
+func renderShowTables(output io.Writer, tables []storage.TableSnapshot, format showFormat) error {
+	switch format {
+	case showFormatTable:
+		return renderShowTableOutput(output, tables)
+	case showFormatJSON:
+		encoder := json.NewEncoder(output)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(showOutput{Tables: tables})
+	case showFormatYAML:
+		encoder := yaml.NewEncoder(output)
+		defer func() {
+			_ = encoder.Close()
+		}()
+		return encoder.Encode(showOutput{Tables: tables})
+	case showFormatTOML:
+		encoder := toml.NewEncoder(output)
+		return encoder.Encode(toTOMLShowOutput(tables))
+	default:
+		return fmt.Errorf("unsupported show format %q: expected table, json, yaml, or toml", format)
+	}
+}
+
+func renderShowTableOutput(output io.Writer, tables []storage.TableSnapshot) error {
+	for i, snapshot := range tables {
+		if i > 0 {
+			if _, err := fmt.Fprintln(output); err != nil {
+				return fmt.Errorf("write show table separator: %w", err)
+			}
+		}
+		if _, err := fmt.Fprintln(output, snapshot.Name); err != nil {
+			return fmt.Errorf("write show table name: %w", err)
+		}
+		rows := make([][]string, 0, len(snapshot.Rows))
+		for _, row := range snapshot.Rows {
+			rendered := make([]string, 0, len(snapshot.Columns))
+			for _, column := range snapshot.Columns {
+				rendered = append(rendered, formatShowValue(row[column]))
+			}
+			rows = append(rows, rendered)
+		}
+		rendered := table.New().
+			Border(lipgloss.ASCIIBorder()).
+			Headers(snapshot.Columns...).
+			Rows(rows...).
+			Render()
+		if _, err := fmt.Fprintln(output, rendered); err != nil {
+			return fmt.Errorf("write show table rows: %w", err)
+		}
+	}
+	return nil
+}
+
+func toTOMLShowOutput(tables []storage.TableSnapshot) tomlShowOutput {
+	converted := tomlShowOutput{Tables: make([]tomlTableSnapshot, 0, len(tables))}
+	for _, snapshot := range tables {
+		table := tomlTableSnapshot{
+			Name:    snapshot.Name,
+			Columns: snapshot.Columns,
+			Rows:    make([]tomlTableRow, 0, len(snapshot.Rows)),
+		}
+		for _, row := range snapshot.Rows {
+			convertedRow := tomlTableRow{Values: make([]tomlTableCell, 0, len(snapshot.Columns))}
+			for _, column := range snapshot.Columns {
+				cell := tomlTableCell{Column: column}
+				if value := row[column]; value == nil {
+					cell.Null = true
+				} else {
+					cell.Value = formatShowValue(value)
+				}
+				convertedRow.Values = append(convertedRow.Values, cell)
+			}
+			table.Rows = append(table.Rows, convertedRow)
+		}
+		converted.Tables = append(converted.Tables, table)
+	}
+	return converted
+}
+
+func formatShowValue(value any) string {
+	if value == nil {
+		return "NULL"
+	}
+	return fmt.Sprint(value)
 }

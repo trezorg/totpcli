@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"encoding/base32"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -22,9 +23,16 @@ type ImportResult struct {
 	Final      int
 }
 
+type TableSnapshot struct {
+	Name    string           `json:"name" yaml:"name" toml:"name"`
+	Columns []string         `json:"columns" yaml:"columns" toml:"columns"`
+	Rows    []map[string]any `json:"rows" yaml:"rows" toml:"rows"`
+}
+
 type Repository interface {
 	Init() error
 	ListProviders() ([]provider.Provider, error)
+	InspectTables() ([]TableSnapshot, error)
 	UpsertProviders([]provider.RawProvider) (ImportResult, error)
 }
 
@@ -129,6 +137,108 @@ ORDER BY id`)
 	return providers, nil
 }
 
+func (r *SQLiteRepository) InspectTables() ([]TableSnapshot, error) {
+	rows, err := r.db.Query(`
+SELECT name
+FROM sqlite_schema
+WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("list sqlite tables: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan sqlite table name: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite table names: %w", err)
+	}
+
+	tables := make([]TableSnapshot, 0, len(names))
+	for _, name := range names {
+		table, err := r.inspectTable(name)
+		if err != nil {
+			return nil, err
+		}
+		tables = append(tables, table)
+	}
+	return tables, nil
+}
+
+func (r *SQLiteRepository) inspectTable(name string) (TableSnapshot, error) {
+	columns, err := r.tableColumns(name)
+	if err != nil {
+		return TableSnapshot{}, err
+	}
+
+	query := fmt.Sprintf("SELECT * FROM %s ORDER BY rowid", quoteSQLiteIdentifier(name))
+	rows, err := r.db.Query(query)
+	if err != nil {
+		return TableSnapshot{}, fmt.Errorf("inspect sqlite table %q: %w", name, err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	snapshot := TableSnapshot{Name: name, Columns: columns}
+	for rows.Next() {
+		values := make([]any, len(columns))
+		dest := make([]any, len(columns))
+		for i := range values {
+			dest[i] = &values[i]
+		}
+		if err := rows.Scan(dest...); err != nil {
+			return TableSnapshot{}, fmt.Errorf("scan sqlite table %q row: %w", name, err)
+		}
+
+		row := make(map[string]any, len(columns))
+		for i, column := range columns {
+			row[column] = normalizeSQLiteValue(values[i])
+		}
+		snapshot.Rows = append(snapshot.Rows, row)
+	}
+	if err := rows.Err(); err != nil {
+		return TableSnapshot{}, fmt.Errorf("iterate sqlite table %q rows: %w", name, err)
+	}
+	return snapshot, nil
+}
+
+func (r *SQLiteRepository) tableColumns(name string) ([]string, error) {
+	rows, err := r.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", quoteSQLiteIdentifier(name)))
+	if err != nil {
+		return nil, fmt.Errorf("inspect sqlite table %q columns: %w", name, err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var columns []string
+	for rows.Next() {
+		var cid int
+		var columnName string
+		var columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, fmt.Errorf("scan sqlite table %q column: %w", name, err)
+		}
+		columns = append(columns, columnName)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite table %q columns: %w", name, err)
+	}
+	return columns, nil
+}
+
 func (r *SQLiteRepository) UpsertProviders(imports []provider.RawProvider) (ImportResult, error) {
 	tx, err := r.db.Begin()
 	if err != nil {
@@ -208,4 +318,17 @@ func canonicalBase32Secret(secret string) string {
 		return normalized
 	}
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(decoded)
+}
+
+func normalizeSQLiteValue(value any) any {
+	switch typed := value.(type) {
+	case []byte:
+		return base64.StdEncoding.EncodeToString(typed)
+	default:
+		return typed
+	}
+}
+
+func quoteSQLiteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }
