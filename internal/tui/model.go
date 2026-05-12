@@ -14,7 +14,7 @@ import (
 	"github.com/trezorg/totpcli/internal/totpcode"
 )
 
-type Generator interface {
+type CodeGenerator interface {
 	Generate(provider.Provider, time.Time) (totpcode.Result, error)
 }
 
@@ -32,7 +32,7 @@ type Model struct {
 	code      string
 	remaining int
 	err       error
-	generator Generator
+	generator CodeGenerator
 	now       func() time.Time
 }
 
@@ -62,7 +62,7 @@ var styles = styleSchema{
 	err:              lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true),
 }
 
-func NewModel(providers []provider.Provider, engine SearchEngine, initialSearch string, generator Generator, now func() time.Time) Model {
+func NewModel(providers []provider.Provider, engine SearchEngine, initialSearch string, generator CodeGenerator, now func() time.Time) Model {
 	input := textinput.New()
 	input.Placeholder = "Search providers"
 	input.Prompt = "Search: "
@@ -73,6 +73,9 @@ func NewModel(providers []provider.Provider, engine SearchEngine, initialSearch 
 
 	if now == nil {
 		now = time.Now
+	}
+	if engine == nil {
+		engine = lexical.New(providers)
 	}
 
 	model := Model{
@@ -92,6 +95,9 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.input.Width = min(40, max(8, msg.Width-10))
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -189,7 +195,7 @@ func (m *Model) Select() bool {
 	}
 
 	selected := m.filtered[m.cursor]
-	m.selected = new(selected)
+	m.selected = &selected
 	m.Refresh()
 	return true
 }
@@ -232,9 +238,6 @@ func (m Model) Err() error {
 }
 
 func (m *Model) applySearch() {
-	if m.engine == nil {
-		m.engine = lexical.New(m.providers)
-	}
 	m.filtered = m.engine.Search(m.input.Value())
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1

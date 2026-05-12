@@ -7,6 +7,7 @@ import (
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 	"github.com/trezorg/totpcli/internal/provider"
+	"github.com/trezorg/totpcli/internal/totpsecret"
 )
 
 const Period = 30
@@ -23,7 +24,11 @@ func (Generator) Generate(selected provider.Provider, now time.Time) (Result, er
 }
 
 func Generate(selected provider.Provider, now time.Time) (Result, error) {
-	code, err := totp.GenerateCodeCustom(selected.TOTPSecret, now, totp.ValidateOpts{
+	secret, err := totpsecret.CanonicalBase32(selected.TOTPSecret)
+	if err != nil {
+		return Result{}, fmt.Errorf("generate TOTP for %s: %w", selected.DisplayLabel(), err)
+	}
+	code, err := totp.GenerateCodeCustom(secret, now, totp.ValidateOpts{
 		Period:    Period,
 		Digits:    digits(selected.Digits),
 		Algorithm: algorithm(selected.Algorithm),
@@ -39,6 +44,7 @@ func Generate(selected provider.Provider, now time.Time) (Result, error) {
 }
 
 func RemainingSeconds(now time.Time) int {
+	// At an exact boundary, the just-generated code has the full next period remaining.
 	elapsed := int(now.Unix() % Period)
 	if elapsed == 0 {
 		return Period

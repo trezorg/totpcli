@@ -28,11 +28,12 @@ The system SHALL resolve the provider storage path to a SQLite database file. Wh
 - **THEN** the system uses `/tmp/providers.sqlite` as the provider database path
 
 ### Requirement: SQLite schema initialization
-The system SHALL open the resolved SQLite database at command startup and SHALL create the provider table schema when the database file or table does not exist. The provider table schema SHALL represent the provider fields `secret`, `name`, `issuer`, `algorithm`, `digits`, `type`, and `totpSecret` and SHALL support duplicate detection for imports.
+The system SHALL open the resolved SQLite database at command startup and SHALL create the provider table schema when the database file or table does not exist. The provider table schema SHALL represent the provider fields `secret`, `name`, `issuer`, `algorithm`, `digits`, `type`, and `totpSecret` and SHALL support duplicate detection for imports. The database stores TOTP secrets in cleartext and SHALL be created with owner-only file permissions.
 
 #### Scenario: Missing database is created
 - **WHEN** the resolved SQLite database file does not exist
 - **THEN** the system creates the database file and provider table before reading or writing providers
+- **AND** the database file permissions are restricted to the owner
 
 #### Scenario: Existing database is reused
 - **WHEN** the resolved SQLite database file already contains the provider table

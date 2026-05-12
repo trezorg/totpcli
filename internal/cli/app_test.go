@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -15,10 +16,12 @@ import (
 	"github.com/trezorg/totpcli/internal/provider"
 	"github.com/trezorg/totpcli/internal/search/lexical"
 	"github.com/trezorg/totpcli/internal/storage"
+	"github.com/trezorg/totpcli/internal/testutil"
 	"github.com/trezorg/totpcli/internal/totpcode"
 	"github.com/trezorg/totpcli/internal/tui"
 	"google.golang.org/protobuf/encoding/protowire"
 	"gopkg.in/yaml.v3"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -30,7 +33,7 @@ const (
 func TestRunLoadsProvidersAndLaunchesTUIWithSearch(t *testing.T) {
 	t.Parallel()
 
-	path := writeProviderFile(t, `[
+	path := writeProviderFileAndDatabase(t, `[
   {
     "name": "trezorg",
     "issuer": "GitHub",
@@ -73,7 +76,7 @@ func TestRunLoadsProvidersAndLaunchesTUIWithSearch(t *testing.T) {
 }
 
 func TestRunUsesEnvironmentProviderPath(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 	t.Setenv("TOTPCLI_TOTP_PATH", path)
 
 	var launched tui.Model
@@ -95,7 +98,7 @@ func TestRunUsesEnvironmentProviderPath(t *testing.T) {
 }
 
 func TestRunUsesEnvironmentSearch(t *testing.T) {
-	path := writeProviderFile(t, `[
+	path := writeProviderFileAndDatabase(t, `[
   {
     "name": "trezorg",
     "issuer": "GitHub",
@@ -136,7 +139,7 @@ func TestRunUsesEnvironmentSearch(t *testing.T) {
 }
 
 func TestRunSearchEngineFlagSelectsEngine(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 
 	var engineName string
 	app := App{
@@ -162,7 +165,7 @@ func TestRunSearchEngineFlagSelectsEngine(t *testing.T) {
 }
 
 func TestRunTOTPSubcommandUsesTOTPBehavior(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 
 	var launched tui.Model
 	app := App{
@@ -186,7 +189,7 @@ func TestRunTOTPSubcommandUsesTOTPBehavior(t *testing.T) {
 }
 
 func TestRunTOTPSubcommandNoTUIPrintsTokenOutput(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 
 	var stdout bytes.Buffer
 	app := App{
@@ -217,7 +220,7 @@ func TestRunImportSubcommandUsesDecoderAndWritesProviders(t *testing.T) {
 		Home:            t.TempDir(),
 		Stdout:          &stdout,
 		Stderr:          &stderr,
-		ImportQRDecoder: stubQRDecoder{uri: testMigrationURI([]byte("hello"), "trezorg", "GitHub")},
+		ImportQRDecoder: testutil.StubQRDecoder{URI: testMigrationURI([]byte("hello"), "trezorg", "GitHub")},
 		RunTUI: func(tui.Model) error {
 			t.Fatal("RunTUI called for import command")
 			return nil
@@ -354,6 +357,7 @@ func TestRunAddSubcommandRejectsInvalidInputBeforeOpeningDatabase(t *testing.T) 
 
 	tests := map[string][]string{
 		"missing secret":           {"add", "--issuer", "GitHub"},
+		"empty secret":             {"add", "--issuer", "GitHub", "--totp-secret", ""},
 		"missing identity":         {"add", "--totp-secret", addSHA1Secret},
 		"invalid totp secret":      {"add", "--issuer", "GitHub", "--totp-secret", "not-base32"},
 		"base32 encoded short key": {"add", "--issuer", "GitHub", "--totp-secret", "NBUQ"},
@@ -387,6 +391,29 @@ func TestRunAddSubcommandRejectsInvalidInputBeforeOpeningDatabase(t *testing.T) 
 				t.Fatal("stderr is empty, want validation error")
 			}
 		})
+	}
+}
+
+func TestRunAddSubcommandRejectsEmptyTOTPSecretWithFlagMessage(t *testing.T) {
+	t.Parallel()
+
+	var stderr bytes.Buffer
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &stderr,
+		NewRepository: func(string) (providerRepository, error) {
+			t.Fatal("NewRepository called before add input validation")
+			return nil, nil
+		},
+	}
+
+	code := app.Run([]string{"add", "--issuer", "GitHub", "--totp-secret", ""})
+	if code != 2 {
+		t.Fatalf("Run exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "totp secret is required") {
+		t.Fatalf("stderr = %q, want totp secret is required", stderr.String())
 	}
 }
 
@@ -455,7 +482,7 @@ func TestRunImportConvertsNonSQLiteOutputPath(t *testing.T) {
 		Home:            t.TempDir(),
 		Stdout:          &stdout,
 		Stderr:          &stderr,
-		ImportQRDecoder: stubQRDecoder{uri: testMigrationURI([]byte("hello"), "trezorg", "GitHub")},
+		ImportQRDecoder: testutil.StubQRDecoder{URI: testMigrationURI([]byte("hello"), "trezorg", "GitHub")},
 	}
 
 	code := app.Run([]string{"import", "/tmp/export.png", "--totp", outputPath})
@@ -481,7 +508,7 @@ func TestRunImportDefaultsToImageSQLitePath(t *testing.T) {
 		Home:            t.TempDir(),
 		Stdout:          &stdout,
 		Stderr:          &stderr,
-		ImportQRDecoder: stubQRDecoder{uri: testMigrationURI([]byte("hello"), "trezorg", "GitHub")},
+		ImportQRDecoder: testutil.StubQRDecoder{URI: testMigrationURI([]byte("hello"), "trezorg", "GitHub")},
 	}
 
 	code := app.Run([]string{"import", imagePath})
@@ -495,7 +522,7 @@ func TestRunImportDefaultsToImageSQLitePath(t *testing.T) {
 }
 
 func TestRunImportTOTPPFlagOverridesEnvironmentPath(t *testing.T) {
-	envPath := writeProviderFile(t, singleProviderJSON(), "env.json")
+	envPath := writeProviderFileAndDatabase(t, singleProviderJSON(), "env.json")
 	flagPath := filepath.Join(t.TempDir(), "flag.json")
 	flagDBPath := strings.TrimSuffix(flagPath, ".json") + ".sqlite"
 	t.Setenv("TOTPCLI_TOTP_PATH", envPath)
@@ -506,7 +533,7 @@ func TestRunImportTOTPPFlagOverridesEnvironmentPath(t *testing.T) {
 		Home:            t.TempDir(),
 		Stdout:          &stdout,
 		Stderr:          &stderr,
-		ImportQRDecoder: stubQRDecoder{uri: testMigrationURI([]byte("world"), "root", "AWS")},
+		ImportQRDecoder: testutil.StubQRDecoder{URI: testMigrationURI([]byte("world"), "root", "AWS")},
 	}
 
 	code := app.Run([]string{"import", "/tmp/export.png", "--totp", flagPath})
@@ -522,14 +549,14 @@ func TestRunImportTOTPPFlagOverridesEnvironmentPath(t *testing.T) {
 }
 
 func TestRunImportRejectsOverrideFlag(t *testing.T) {
-	outputPath := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	outputPath := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 
 	var stderr bytes.Buffer
 	app := App{
 		Home:            t.TempDir(),
 		Stdout:          &bytes.Buffer{},
 		Stderr:          &stderr,
-		ImportQRDecoder: stubQRDecoder{uri: testMigrationURI([]byte("world"), "root", "AWS")},
+		ImportQRDecoder: testutil.StubQRDecoder{URI: testMigrationURI([]byte("world"), "root", "AWS")},
 	}
 
 	code := app.Run([]string{"import", "/tmp/export.png", "--totp", outputPath, "--override"})
@@ -631,6 +658,48 @@ func TestRunShowSubcommandOutputsJSONTables(t *testing.T) {
 	if len(decoded.Tables[0].Rows) != 1 || decoded.Tables[0].Rows[0]["issuer"] != "GitHub" {
 		t.Fatalf("provider rows = %#v, want GitHub provider", decoded.Tables[0].Rows)
 	}
+	if got := decoded.Tables[0].Rows[0]["totp_secret"]; got != redactedShowValue {
+		t.Fatalf("totp_secret = %#v, want redacted value", got)
+	}
+	if got := decoded.Tables[0].Rows[0]["totp_secret_key"]; got != redactedShowValue {
+		t.Fatalf("totp_secret_key = %#v, want redacted value", got)
+	}
+	if strings.Contains(stdout.String(), "JBSWY3DPEHPK3PXP") {
+		t.Fatalf("stdout leaked TOTP secret:\n%s", stdout.String())
+	}
+}
+
+func TestRunShowRevealSecretsOutputsJSONTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	seedProviderDatabase(t, path, []provider.RawProvider{{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Algorithm:  "SHA1",
+		Digits:     "SIX",
+		Type:       "TOTP",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	}})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"show", "--totp", path, "--format", "json", "--reveal-secrets"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	var decoded struct {
+		Tables []storage.TableSnapshot `json:"tables"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("show json did not parse: %v\n%s", err, stdout.String())
+	}
+	if len(decoded.Tables) != 1 || len(decoded.Tables[0].Rows) != 1 {
+		t.Fatalf("tables = %#v, want one provider row", decoded.Tables)
+	}
+	if got := decoded.Tables[0].Rows[0]["totp_secret"]; got != "JBSWY3DPEHPK3PXP" {
+		t.Fatalf("totp_secret = %#v, want revealed secret", got)
+	}
 }
 
 func TestRunShowDefaultsToTableOutput(t *testing.T) {
@@ -659,6 +728,9 @@ func TestRunShowDefaultsToTableOutput(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "sqlite_sequence") {
 		t.Fatalf("stdout = %q, want internal SQLite table excluded", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "JBSWY3DPEHPK3PXP") {
+		t.Fatalf("stdout leaked TOTP secret:\n%s", stdout.String())
 	}
 }
 
@@ -718,7 +790,7 @@ func TestRunImportReportsUsageAndImportErrors(t *testing.T) {
 			Home:            t.TempDir(),
 			Stdout:          &bytes.Buffer{},
 			Stderr:          &stderr,
-			ImportQRDecoder: stubQRDecoder{err: fmt.Errorf("QR decode failed")},
+			ImportQRDecoder: testutil.StubQRDecoder{Err: fmt.Errorf("QR decode failed")},
 		}
 
 		code := app.Run([]string{"import", "/tmp/export.png", "--totp", filepath.Join(t.TempDir(), "providers.json")})
@@ -735,7 +807,7 @@ func TestRunImportReportsUsageAndImportErrors(t *testing.T) {
 }
 
 func TestRunUsesEnvironmentSearchEngine(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 	t.Setenv("TOTPCLI_SEARCH_ENGINE", "lexical")
 
 	var engineName string
@@ -762,8 +834,8 @@ func TestRunUsesEnvironmentSearchEngine(t *testing.T) {
 }
 
 func TestRunFlagsOverrideEnvironment(t *testing.T) {
-	envPath := writeProviderFile(t, singleProviderJSON(), "env.json")
-	flagPath := writeProviderFile(t, `[
+	envPath := writeProviderFileAndDatabase(t, singleProviderJSON(), "env.json")
+	flagPath := writeProviderFileAndDatabase(t, `[
   {
     "name": "root",
     "issuer": "AWS",
@@ -798,7 +870,7 @@ func TestRunFlagsOverrideEnvironment(t *testing.T) {
 }
 
 func TestRunSearchEngineFlagOverridesEnvironment(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 	t.Setenv("TOTPCLI_SEARCH_ENGINE", "lexical")
 
 	var engineName string
@@ -825,7 +897,7 @@ func TestRunSearchEngineFlagOverridesEnvironment(t *testing.T) {
 }
 
 func TestRunDefaultSearchEngineIsDigram(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 
 	var engineName string
 	app := App{
@@ -851,7 +923,7 @@ func TestRunDefaultSearchEngineIsDigram(t *testing.T) {
 }
 
 func TestRunNoTUIFlagSkipsTUI(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 
 	app := App{
 		Home:   t.TempDir(),
@@ -871,7 +943,7 @@ func TestRunNoTUIFlagSkipsTUI(t *testing.T) {
 }
 
 func TestRunUsesEnvironmentNoTUI(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 	t.Setenv("TOTPCLI_NO_TUI", "true")
 
 	app := App{
@@ -892,7 +964,7 @@ func TestRunUsesEnvironmentNoTUI(t *testing.T) {
 }
 
 func TestRunNoTUIFlagOverridesDisabledEnvironment(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 	t.Setenv("TOTPCLI_NO_TUI", "false")
 
 	app := App{
@@ -931,7 +1003,7 @@ func TestRunReportsInvalidNoTUIEnvironmentBeforeLoadingProviders(t *testing.T) {
 }
 
 func TestRunIgnoresEnvironmentFormat(t *testing.T) {
-	path := writeProviderFile(t, singleProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, singleProviderJSON(), "providers.json")
 	t.Setenv("TOTPCLI_FORMAT", "toml")
 
 	var launched tui.Model
@@ -1052,6 +1124,7 @@ func TestRunSubcommandHelpListsRelevantFlags(t *testing.T) {
 			"SQLite",
 			"--totp",
 			"--format",
+			"--reveal-secrets",
 		},
 	}
 
@@ -1167,7 +1240,7 @@ func TestRunCreatesMissingProviderDatabase(t *testing.T) {
 }
 
 func TestRunNoTUIPrintsAllProviders(t *testing.T) {
-	path := writeProviderFile(t, twoProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, twoProviderJSON(), "providers.json")
 
 	var stdout bytes.Buffer
 	app := App{
@@ -1186,7 +1259,7 @@ func TestRunNoTUIPrintsAllProviders(t *testing.T) {
 }
 
 func TestRunNoTUISearchPrintsFilteredProviders(t *testing.T) {
-	path := writeProviderFile(t, twoProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, twoProviderJSON(), "providers.json")
 
 	var stdout bytes.Buffer
 	app := App{
@@ -1208,7 +1281,7 @@ func TestRunNoTUISearchPrintsFilteredProviders(t *testing.T) {
 }
 
 func TestRunNoTUIEmptySearchPrintsNoTokenRows(t *testing.T) {
-	path := writeProviderFile(t, twoProviderJSON(), "providers.json")
+	path := writeProviderFileAndDatabase(t, twoProviderJSON(), "providers.json")
 
 	var stdout bytes.Buffer
 	app := App{
@@ -1228,7 +1301,7 @@ func TestRunNoTUIEmptySearchPrintsNoTokenRows(t *testing.T) {
 }
 
 func TestRunNoTUIMatchedInvalidProviderFailsCommand(t *testing.T) {
-	path := writeProviderFile(t, `[
+	path := writeProviderFileAndUnsafeDatabase(t, `[
   {
     "name": "broken",
     "issuer": "GitHub",
@@ -1257,7 +1330,7 @@ func TestRunNoTUIMatchedInvalidProviderFailsCommand(t *testing.T) {
 }
 
 func TestRunNoTUIFilteredOutInvalidProviderDoesNotFailCommand(t *testing.T) {
-	path := writeProviderFile(t, `[
+	path := writeProviderFileAndUnsafeDatabase(t, `[
   {
     "name": "valid",
     "issuer": "GitHub",
@@ -1296,7 +1369,7 @@ func TestRunNoTUIFilteredOutInvalidProviderDoesNotFailCommand(t *testing.T) {
 	}
 }
 
-func TestParseShowFormat(t *testing.T) {
+func TestShowFormatSet(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]showFormat{
@@ -1311,18 +1384,19 @@ func TestParseShowFormat(t *testing.T) {
 		t.Run(input, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := parseShowFormat(input)
-			if err != nil {
-				t.Fatalf("parseShowFormat returned error: %v", err)
+			var got showFormat
+			if err := got.Set(input); err != nil {
+				t.Fatalf("showFormat.Set returned error: %v", err)
 			}
 			if got != want {
-				t.Fatalf("parseShowFormat(%q) = %q, want %q", input, got, want)
+				t.Fatalf("showFormat.Set(%q) = %q, want %q", input, got, want)
 			}
 		})
 	}
 
-	if _, err := parseShowFormat("csv"); err == nil {
-		t.Fatal("parseShowFormat returned nil error for unsupported format")
+	var f showFormat
+	if err := f.Set("csv"); err == nil {
+		t.Fatal("showFormat.Set returned nil error for unsupported format")
 	}
 }
 
@@ -1580,7 +1654,7 @@ func seedProviderDatabase(t *testing.T, path string, providers []provider.RawPro
 	}
 }
 
-func writeProviderFile(t *testing.T, content string, name string) string {
+func writeProviderFileAndDatabase(t *testing.T, content string, name string) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), name)
@@ -1589,13 +1663,77 @@ func writeProviderFile(t *testing.T, content string, name string) string {
 	}
 	raw, err := provider.ParseRaw([]byte(content), provider.DetectFormat(path))
 	if err != nil {
-		return path
+		t.Fatalf("parse provider fixture: %v", err)
 	}
 	dbPath, err := storage.ResolveDatabasePath(path, "", "")
 	if err != nil {
 		t.Fatalf("resolve provider database path: %v", err)
 	}
 	seedProviderDatabase(t, dbPath, raw)
+	return path
+}
+
+func writeProviderFileAndUnsafeDatabase(t *testing.T, content string, name string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write provider file: %v", err)
+	}
+	raw, err := provider.ParseRaw([]byte(content), provider.DetectFormat(path))
+	if err != nil {
+		t.Fatalf("parse provider fixture: %v", err)
+	}
+	dbPath, err := storage.ResolveDatabasePath(path, "", "")
+	if err != nil {
+		t.Fatalf("resolve provider database path: %v", err)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open unsafe provider database: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close unsafe provider database: %v", err)
+		}
+	}()
+	if _, err := db.Exec(`
+CREATE TABLE providers (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	secret TEXT NOT NULL DEFAULT '',
+	name TEXT NOT NULL DEFAULT '',
+	issuer TEXT NOT NULL DEFAULT '',
+	algorithm TEXT NOT NULL,
+	digits INTEGER NOT NULL,
+	type TEXT NOT NULL,
+	totp_secret TEXT NOT NULL,
+	totp_secret_key TEXT NOT NULL,
+	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(issuer, name, totp_secret_key)
+);`); err != nil {
+		t.Fatalf("create unsafe provider database: %v", err)
+	}
+	for _, record := range raw {
+		digits := 6
+		if strings.EqualFold(strings.TrimSpace(record.Digits), "EIGHT") || strings.TrimSpace(record.Digits) == "8" {
+			digits = 8
+		}
+		if _, err := db.Exec(`
+INSERT INTO providers (secret, name, issuer, algorithm, digits, type, totp_secret, totp_secret_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			strings.TrimSpace(record.Secret),
+			strings.TrimSpace(record.Name),
+			strings.TrimSpace(record.Issuer),
+			strings.ToUpper(strings.TrimSpace(record.Algorithm)),
+			digits,
+			strings.ToUpper(strings.TrimSpace(record.Type)),
+			strings.TrimSpace(record.TOTPSecret),
+			strings.ToUpper(strings.TrimSpace(record.TOTPSecret)),
+		); err != nil {
+			t.Fatalf("seed unsafe provider database: %v", err)
+		}
+	}
 	return path
 }
 
@@ -1622,16 +1760,4 @@ func testMigrationURI(secret []byte, name string, issuer string) string {
 	payload = protowire.AppendBytes(protowire.AppendTag(payload, 1, protowire.BytesType), account)
 	payload = protowire.AppendVarint(protowire.AppendTag(payload, 2, protowire.VarintType), 1)
 	return "otpauth-migration://offline?data=" + base64.StdEncoding.EncodeToString(payload)
-}
-
-type stubQRDecoder struct {
-	uri string
-	err error
-}
-
-func (s stubQRDecoder) Decode(string) (string, error) {
-	if s.err != nil {
-		return "", s.err
-	}
-	return s.uri, nil
 }

@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"encoding/base32"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +21,7 @@ import (
 	"github.com/trezorg/totpcli/internal/search/lexical"
 	"github.com/trezorg/totpcli/internal/storage"
 	"github.com/trezorg/totpcli/internal/totpcode"
+	"github.com/trezorg/totpcli/internal/totpsecret"
 	"github.com/trezorg/totpcli/internal/tui"
 	"gopkg.in/yaml.v3"
 )
@@ -28,6 +29,7 @@ import (
 const (
 	searchEngineDigram  = "digram"
 	searchEngineLexical = "lexical"
+	redactedShowValue   = "[REDACTED]"
 )
 
 type showFormat string
@@ -38,6 +40,26 @@ const (
 	showFormatYAML  showFormat = "yaml"
 	showFormatTOML  showFormat = "toml"
 )
+
+func (f showFormat) String() string { return string(f) }
+
+func (f *showFormat) Set(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", string(showFormatTable):
+		*f = showFormatTable
+	case string(showFormatJSON):
+		*f = showFormatJSON
+	case string(showFormatYAML):
+		*f = showFormatYAML
+	case string(showFormatTOML):
+		*f = showFormatTOML
+	default:
+		return fmt.Errorf("unsupported show format %q: expected table, json, yaml, or toml", value)
+	}
+	return nil
+}
+
+func (showFormat) Type() string { return "format" }
 
 type App struct {
 	Home            string
@@ -90,9 +112,10 @@ func (a App) Run(args []string) int {
 		format string
 	}{}
 	showOpts := struct {
-		path   string
-		format string
-	}{format: string(showFormatTable)}
+		path          string
+		format        showFormat
+		revealSecrets bool
+	}{format: showFormatTable}
 	exitCode := 0
 	runTOTP := func(cmd *cobra.Command, _ []string) error {
 		code, err := a.runTOTP(cmd, stdout, totpOpts)
@@ -254,11 +277,6 @@ replacing its extension with .sqlite. Duplicate providers are overridden.`,
 
 When --totp is omitted, show reads the default provider database path.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			format, err := parseShowFormat(showOpts.format)
-			if err != nil {
-				exitCode = 2
-				return err
-			}
 			effectivePath := effectiveString(cmd, "totp", showOpts.path, "TOTPCLI_TOTP_PATH")
 			dbPath, err := storage.ResolveDatabasePath(effectivePath, filepath.Join("~", "totp.sqlite"), a.Home)
 			if err != nil {
@@ -278,7 +296,10 @@ When --totp is omitted, show reads the default provider database path.`,
 				exitCode = 1
 				return err
 			}
-			if err := renderShowTables(stdout, tables, format); err != nil {
+			if !showOpts.revealSecrets {
+				tables = redactShowSecrets(tables)
+			}
+			if err := renderShowTables(stdout, tables, showOpts.format); err != nil {
 				exitCode = 1
 				return err
 			}
@@ -286,7 +307,8 @@ When --totp is omitted, show reads the default provider database path.`,
 		},
 	}
 	showCmd.Flags().StringVar(&showOpts.path, "totp", "", "SQLite provider database path (env TOTPCLI_TOTP_PATH)")
-	showCmd.Flags().StringVar(&showOpts.format, "format", string(showFormatTable), "Show output format: table, json, yaml, or toml")
+	showCmd.Flags().Var(&showOpts.format, "format", "Show output format: table, json, yaml, or toml")
+	showCmd.Flags().BoolVar(&showOpts.revealSecrets, "reveal-secrets", false, "Reveal secret values in show output")
 
 	cmd.AddCommand(totpCmd, addCmd, importCmd, importFileCmd, showCmd)
 	cmd.SetArgs(args)
@@ -395,11 +417,14 @@ func printImportResult(output io.Writer, result storage.ImportResult) error {
 }
 
 func validateAddProvider(raw provider.RawProvider) error {
+	if strings.TrimSpace(raw.TOTPSecret) == "" {
+		return errors.New("totp secret is required")
+	}
 	normalized, err := provider.Normalize(raw)
 	if err != nil {
 		return err
 	}
-	if err := validateAddTOTPSecret(normalized.TOTPSecret, normalized.Algorithm); err != nil {
+	if err := totpsecret.ValidateMinimumBytes(normalized.TOTPSecret, normalized.Algorithm); err != nil {
 		return err
 	}
 	if _, err := totpcode.Generate(normalized, time.Unix(0, 0)); err != nil {
@@ -408,41 +433,12 @@ func validateAddProvider(raw provider.RawProvider) error {
 	return nil
 }
 
-func validateAddTOTPSecret(secret string, algorithm provider.Algorithm) error {
-	normalized := strings.ToUpper(strings.TrimSpace(secret))
-	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.TrimRight(normalized, "="))
-	if err != nil {
-		return fmt.Errorf("invalid totp secret: %w", err)
-	}
-	minBytes := minTOTPSecretBytes(algorithm)
-	if len(decoded) < minBytes {
-		return fmt.Errorf("invalid totp secret: decoded key is %d bytes, want at least %d bytes for %s", len(decoded), minBytes, algorithm)
-	}
-	return nil
-}
-
-func minTOTPSecretBytes(algorithm provider.Algorithm) int {
-	switch algorithm {
-	case provider.AlgorithmSHA256:
-		return 32
-	case provider.AlgorithmSHA512:
-		return 64
-	default:
-		return 20
-	}
-}
-
 func printAddResult(output io.Writer, path string, added provider.Provider) error {
 	_, err := fmt.Fprintf(output, "saved provider %s to %s\n", added.DisplayLabel(), path)
 	return err
 }
 
 func newSearchEngineForName(name string, providers []provider.Provider) (tui.SearchEngine, error) {
-	name, err := parseSearchEngineName(name)
-	if err != nil {
-		return nil, err
-	}
-
 	switch name {
 	case searchEngineDigram:
 		return digram.New(providers), nil
@@ -558,21 +554,6 @@ type tomlTableCell struct {
 	Null   bool   `toml:"null,omitempty"`
 }
 
-func parseShowFormat(format string) (showFormat, error) {
-	switch strings.ToLower(strings.TrimSpace(format)) {
-	case "", string(showFormatTable):
-		return showFormatTable, nil
-	case string(showFormatJSON):
-		return showFormatJSON, nil
-	case string(showFormatYAML):
-		return showFormatYAML, nil
-	case string(showFormatTOML):
-		return showFormatTOML, nil
-	default:
-		return "", fmt.Errorf("unsupported show format %q: expected table, json, yaml, or toml", format)
-	}
-}
-
 func renderShowTables(output io.Writer, tables []storage.TableSnapshot, format showFormat) error {
 	switch format {
 	case showFormatTable:
@@ -592,6 +573,39 @@ func renderShowTables(output io.Writer, tables []storage.TableSnapshot, format s
 		return encoder.Encode(toTOMLShowOutput(tables))
 	default:
 		return fmt.Errorf("unsupported show format %q: expected table, json, yaml, or toml", format)
+	}
+}
+
+func redactShowSecrets(tables []storage.TableSnapshot) []storage.TableSnapshot {
+	redacted := make([]storage.TableSnapshot, 0, len(tables))
+	for _, snapshot := range tables {
+		table := storage.TableSnapshot{
+			Name:    snapshot.Name,
+			Columns: append([]string(nil), snapshot.Columns...),
+			Rows:    make([]map[string]any, 0, len(snapshot.Rows)),
+		}
+		for _, row := range snapshot.Rows {
+			redactedRow := make(map[string]any, len(row))
+			for column, value := range row {
+				if isShowSecretColumn(column) && value != nil {
+					redactedRow[column] = redactedShowValue
+					continue
+				}
+				redactedRow[column] = value
+			}
+			table.Rows = append(table.Rows, redactedRow)
+		}
+		redacted = append(redacted, table)
+	}
+	return redacted
+}
+
+func isShowSecretColumn(column string) bool {
+	switch strings.ToLower(column) {
+	case "secret", "totp_secret", "totp_secret_key":
+		return true
+	default:
+		return false
 	}
 }
 

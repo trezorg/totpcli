@@ -2,9 +2,9 @@ package digram
 
 import (
 	"slices"
-	"strings"
 
 	"github.com/trezorg/totpcli/internal/provider"
+	"github.com/trezorg/totpcli/internal/search"
 )
 
 type Engine struct {
@@ -31,7 +31,7 @@ func New(providers []provider.Provider) Engine {
 }
 
 func (e Engine) Search(query string) []provider.Provider {
-	query = normalize(query)
+	query = search.Normalize(query)
 	if query == "" {
 		return slices.Clone(e.providers)
 	}
@@ -41,7 +41,7 @@ func (e Engine) Search(query string) []provider.Provider {
 	for i := range runes {
 		key := string(runes[i])
 		if i > 0 {
-			key = string([]rune{runes[i-1], runes[i]})
+			key = string(runes[i-1]) + string(runes[i])
 		}
 
 		next := node.children[key]
@@ -59,13 +59,13 @@ func (e Engine) Search(query string) []provider.Provider {
 }
 
 func (e Engine) insert(providerIndex int, value string) {
-	runes := []rune(normalize(value))
+	runes := []rune(search.Normalize(value))
 	for start := range runes {
 		node := e.root
 		for i := start; i < len(runes); i++ {
 			key := string(runes[i])
 			if i > start {
-				key = string([]rune{runes[i-1], runes[i]})
+				key = string(runes[i-1]) + string(runes[i])
 			}
 
 			child := node.children[key]
@@ -88,8 +88,4 @@ func (n *node) add(providerIndex int) {
 		return
 	}
 	n.indexes = append(n.indexes, providerIndex)
-}
-
-func normalize(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 	"github.com/trezorg/totpcli/internal/provider"
@@ -48,6 +49,18 @@ func TestNewModelUsesConfiguredSearchEngine(t *testing.T) {
 	}, "ignored", nil, fixedNow)
 
 	assertLabels(t, model.Filtered(), []string{"Configured"})
+}
+
+func TestUpdateResizesSearchInput(t *testing.T) {
+	t.Parallel()
+
+	model := newTestModel("")
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 28, Height: 12})
+	got := updated.(Model)
+
+	if got.input.Width != 18 {
+		t.Fatalf("input width = %d, want 18", got.input.Width)
+	}
 }
 
 func TestViewRendersProviderLabels(t *testing.T) {

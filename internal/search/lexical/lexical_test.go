@@ -3,22 +3,22 @@ package lexical
 import (
 	"testing"
 
-	"github.com/trezorg/totpcli/internal/provider"
+	"github.com/trezorg/totpcli/internal/search/searchtest"
 )
 
 func TestSearchReturnsAllProvidersForBlankQuery(t *testing.T) {
 	t.Parallel()
 
-	providers := sampleProviders()
+	providers := searchtest.SampleProviders()
 	got := New(providers).Search("")
 
-	assertLabels(t, got, []string{"GitHub/trezorg", "AWS/root", "GitLab"})
+	searchtest.AssertLabels(t, got, []string{"GitHub/trezorg", "AWS/root", "GitLab"})
 }
 
 func TestSearchMatchesIssuerNameAndDisplayLabelCaseInsensitively(t *testing.T) {
 	t.Parallel()
 
-	providers := sampleProviders()
+	providers := searchtest.SampleProviders()
 	tests := map[string][]string{
 		"git":            {"GitHub/trezorg", "GitLab"},
 		"ZORG":           {"GitHub/trezorg"},
@@ -30,7 +30,7 @@ func TestSearchMatchesIssuerNameAndDisplayLabelCaseInsensitively(t *testing.T) {
 			t.Parallel()
 
 			got := New(providers).Search(query)
-			assertLabels(t, got, want)
+			searchtest.AssertLabels(t, got, want)
 		})
 	}
 }
@@ -38,29 +38,8 @@ func TestSearchMatchesIssuerNameAndDisplayLabelCaseInsensitively(t *testing.T) {
 func TestSearchExcludesNonMatches(t *testing.T) {
 	t.Parallel()
 
-	got := New(sampleProviders()).Search("missing")
+	got := New(searchtest.SampleProviders()).Search("missing")
 	if len(got) != 0 {
 		t.Fatalf("len(results) = %d, want 0", len(got))
-	}
-}
-
-func sampleProviders() []provider.Provider {
-	return []provider.Provider{
-		{Issuer: "GitHub", Name: "trezorg"},
-		{Issuer: "AWS", Name: "root"},
-		{Issuer: "GitLab"},
-	}
-}
-
-func assertLabels(t *testing.T, providers []provider.Provider, want []string) {
-	t.Helper()
-
-	if len(providers) != len(want) {
-		t.Fatalf("len(providers) = %d, want %d", len(providers), len(want))
-	}
-	for i := range want {
-		if got := providers[i].DisplayLabel(); got != want[i] {
-			t.Fatalf("providers[%d] = %q, want %q", i, got, want[i])
-		}
 	}
 }

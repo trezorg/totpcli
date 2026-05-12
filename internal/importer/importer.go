@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	_ "image/gif"
-	_ "image/jpeg"
 	_ "image/png"
 	"net/url"
 	"os"
@@ -64,14 +62,6 @@ type MigrationPayload struct {
 	BatchID    int
 }
 
-type Result struct {
-	OutputPath string
-	Imported   int
-	Added      int
-	Overridden int
-	Final      int
-}
-
 type QRDecoder interface {
 	Decode(path string) (string, error)
 }
@@ -120,18 +110,18 @@ func (FileService) Import(paths []string, explicitFormat string, home string, re
 		if err != nil {
 			return storage.ImportResult{}, err
 		}
-		format, err := provider.ParseFormat(explicitFormat)
-		if err != nil {
-			return storage.ImportResult{}, err
-		}
+		var format provider.Format
 		if strings.TrimSpace(explicitFormat) == "" {
 			format = provider.DetectFormat(expanded)
+		} else {
+			parsed, err := provider.ParseFormat(explicitFormat)
+			if err != nil {
+				return storage.ImportResult{}, err
+			}
+			format = parsed
 		}
 		raw, err := provider.LoadRaw(expanded, format)
 		if err != nil {
-			return storage.ImportResult{}, err
-		}
-		if err := validateRawProviders(raw); err != nil {
 			return storage.ImportResult{}, err
 		}
 		imports = append(imports, raw...)
@@ -173,8 +163,7 @@ func (s Service) Providers(imagePath string) ([]provider.RawProvider, error) {
 }
 
 type ImageQRDecoder struct{}
-
-var zbarCommand = exec.Command
+type commandRunner func(string, ...string) *exec.Cmd
 
 func (ImageQRDecoder) Decode(path string) (string, error) {
 	file, err := os.Open(path)
@@ -195,11 +184,11 @@ func (ImageQRDecoder) Decode(path string) (string, error) {
 	}
 	result, err := qrcode.NewQRCodeReader().Decode(bitmap, nil)
 	if err != nil {
-		zbarResult, zbarErr := decodeWithZbarimg(path)
+		zbarResult, zbarErr := decodeWithZbarimg(path, exec.Command)
 		if zbarErr == nil {
 			return zbarResult, nil
 		}
-		return "", fmt.Errorf("decode QR code: %w", err)
+		return "", fmt.Errorf("decode QR code: %w (zbarimg fallback: %v)", err, zbarErr)
 	}
 	return result.GetText(), nil
 }
@@ -268,12 +257,32 @@ func (ProviderConverter) Convert(payload MigrationPayload) ([]provider.RawProvid
 			Type:       "TOTP",
 			TOTPSecret: encoder.EncodeToString(account.Secret),
 		}
-		if _, err := provider.Normalize(raw); err != nil {
+		normalized, err := provider.Normalize(raw)
+		if err != nil {
 			return nil, fmt.Errorf("account %d provider conversion: %w", i+1, err)
 		}
-		providers = append(providers, raw)
+		providers = append(providers, rawProviderFromNormalized(normalized))
 	}
 	return providers, nil
+}
+
+func rawProviderFromNormalized(normalized provider.Provider) provider.RawProvider {
+	digits := fmt.Sprint(normalized.Digits)
+	switch normalized.Digits {
+	case 6:
+		digits = "SIX"
+	case 8:
+		digits = "EIGHT"
+	}
+	return provider.RawProvider{
+		Secret:     normalized.Secret,
+		Name:       normalized.Name,
+		Issuer:     normalized.Issuer,
+		Algorithm:  string(normalized.Algorithm),
+		Digits:     digits,
+		Type:       normalized.Type,
+		TOTPSecret: normalized.TOTPSecret,
+	}
 }
 
 func decodePayload(data []byte) (MigrationPayload, error) {
@@ -445,17 +454,8 @@ func convertDigits(value DigitCount) (string, error) {
 	}
 }
 
-func validateRawProviders(providers []provider.RawProvider) error {
-	for i, raw := range providers {
-		if _, err := provider.Normalize(raw); err != nil {
-			return fmt.Errorf("provider %d: %w", i+1, err)
-		}
-	}
-	return nil
-}
-
-func decodeWithZbarimg(path string) (string, error) {
-	output, err := zbarCommand("zbarimg", "-q", path).Output()
+func decodeWithZbarimg(path string, run commandRunner) (string, error) {
+	output, err := run("zbarimg", "-q", path).Output()
 	if err != nil {
 		return "", err
 	}

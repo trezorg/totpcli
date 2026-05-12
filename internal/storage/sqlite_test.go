@@ -1,11 +1,16 @@
 package storage
 
 import (
+	"database/sql"
 	"encoding/base64"
+	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/trezorg/totpcli/internal/provider"
+	_ "modernc.org/sqlite"
 )
 
 func TestResolveDatabasePath(t *testing.T) {
@@ -110,6 +115,116 @@ func TestSQLiteRepositoryInitializesSchemaAndListsProviders(t *testing.T) {
 	}
 }
 
+func TestOpenSQLiteCreatesDatabaseWithOwnerOnlyPermissions(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	repo, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := repo.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+	if err := repo.Init(); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat database: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("database mode = %v, want 0600", got)
+	}
+}
+
+func TestOpenSQLiteConfiguresBusyTimeout(t *testing.T) {
+	t.Parallel()
+
+	repo := openTestSQLite(t)
+
+	var timeout int
+	if err := repo.db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatalf("query busy timeout: %v", err)
+	}
+	if timeout != 5000 {
+		t.Fatalf("busy_timeout = %d, want 5000", timeout)
+	}
+}
+
+func TestOpenSQLiteSerializesConnections(t *testing.T) {
+	t.Parallel()
+
+	repo := openTestSQLite(t)
+
+	if got := repo.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1", got)
+	}
+}
+
+func TestOpenSQLiteUsesBusyTimeoutForExistingDatabase(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open setup database: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE setup (id INTEGER PRIMARY KEY)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create setup database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close setup database: %v", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod setup database: %v", err)
+	}
+
+	repo, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := repo.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat database: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("database mode = %v, want 0600", got)
+	}
+}
+
+func TestSQLiteRepositoryListProvidersReportsCorruptRowID(t *testing.T) {
+	t.Parallel()
+
+	repo := openTestSQLite(t)
+	if _, err := repo.db.Exec(`
+INSERT INTO providers (secret, name, issuer, algorithm, digits, type, totp_secret, totp_secret_key)
+VALUES ('', 'broken', 'GitHub', 'MD5', 6, 'TOTP', 'JBSWY3DPEHPK3PXP', 'JBSWY3DPEHPK3PXP')`); err != nil {
+		t.Fatalf("seed corrupt provider: %v", err)
+	}
+
+	_, err := repo.ListProviders()
+	if err == nil {
+		t.Fatal("ListProviders returned nil error for corrupt row")
+	}
+	if !strings.Contains(err.Error(), "stored provider id 1") {
+		t.Fatalf("error = %q, want mention stored provider id 1", err.Error())
+	}
+	if !errors.Is(err, provider.ErrUnsupportedAlgorithm) {
+		t.Fatalf("error = %q, want wrapped ErrUnsupportedAlgorithm", err.Error())
+	}
+}
+
 func TestSQLiteRepositoryOverridesDuplicateProviders(t *testing.T) {
 	t.Parallel()
 
@@ -154,6 +269,27 @@ func TestSQLiteRepositoryOverridesDuplicateProviders(t *testing.T) {
 	}
 	if providers[0].Digits != 8 {
 		t.Fatalf("Digits = %d, want 8", providers[0].Digits)
+	}
+}
+
+func TestSQLiteRepositoryRejectsInvalidCanonicalTOTPSecret(t *testing.T) {
+	t.Parallel()
+
+	repo := openTestSQLite(t)
+
+	_, err := repo.UpsertProviders([]provider.RawProvider{{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Algorithm:  "SHA1",
+		Digits:     "SIX",
+		Type:       "TOTP",
+		TOTPSecret: "INVALID0",
+	}})
+	if err == nil {
+		t.Fatal("UpsertProviders returned nil error for invalid base32 secret")
+	}
+	if !strings.Contains(err.Error(), "totp secret") {
+		t.Fatalf("error = %q, want mention totp secret", err.Error())
 	}
 }
 

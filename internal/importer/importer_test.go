@@ -13,6 +13,7 @@ import (
 	"github.com/boombuler/barcode/qr"
 	"github.com/trezorg/totpcli/internal/provider"
 	"github.com/trezorg/totpcli/internal/storage"
+	"github.com/trezorg/totpcli/internal/testutil"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -59,18 +60,14 @@ func TestImageQRDecoderDecodesLocalImagePath(t *testing.T) {
 func TestImageQRDecoderFallsBackToZbarimg(t *testing.T) {
 	t.Parallel()
 
-	original := zbarCommand
-	t.Cleanup(func() {
-		zbarCommand = original
-	})
-	zbarCommand = func(name string, args ...string) *exec.Cmd {
+	run := func(name string, args ...string) *exec.Cmd {
 		if name != "zbarimg" {
 			t.Fatalf("command = %q, want zbarimg", name)
 		}
 		return exec.Command("printf", "QR-Code:otpauth-migration://offline?data=abc\n")
 	}
 
-	got, err := decodeWithZbarimg("/tmp/export.jpg")
+	got, err := decodeWithZbarimg("/tmp/export.jpg", run)
 	if err != nil {
 		t.Fatalf("decodeWithZbarimg returned error: %v", err)
 	}
@@ -188,6 +185,35 @@ func TestProviderConverterConvertsSupportedTOTPAccounts(t *testing.T) {
 	}
 }
 
+func TestProviderConverterUsesNormalizedDefaults(t *testing.T) {
+	t.Parallel()
+
+	providers, err := ProviderConverter{}.Convert(MigrationPayload{
+		Version: 1,
+		Accounts: []Account{{
+			Secret: []byte("hello"),
+			Name:   "trezorg",
+			Issuer: "GitHub",
+			Type:   AccountTypeTOTP,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Convert returned error: %v", err)
+	}
+
+	want := provider.RawProvider{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Algorithm:  "SHA1",
+		Digits:     "SIX",
+		Type:       "TOTP",
+		TOTPSecret: "NBSWY3DP",
+	}
+	if providers[0] != want {
+		t.Fatalf("provider = %#v, want %#v", providers[0], want)
+	}
+}
+
 func TestProviderConverterRejectsUnsupportedAccounts(t *testing.T) {
 	t.Parallel()
 
@@ -218,7 +244,7 @@ func TestServiceImportPersistsQRProvidersThroughRepository(t *testing.T) {
 
 	repo := &stubProviderRepository{}
 	result, err := Service{
-		QRDecoder: stubQRDecoder{uri: migrationURI(
+		QRDecoder: testutil.StubQRDecoder{URI: migrationURI(
 			migrationPayload(
 				otpParameters([]byte("hello"), "trezorg", "GitHub", 1, 1, 2),
 				protowire.AppendVarint(protowire.AppendTag(nil, 2, protowire.VarintType), 1),
@@ -340,16 +366,4 @@ func (s *stubProviderRepository) UpsertProviders(imports []provider.RawProvider)
 		Added:      len(imports),
 		Final:      len(imports),
 	}, nil
-}
-
-type stubQRDecoder struct {
-	uri string
-	err error
-}
-
-func (s stubQRDecoder) Decode(string) (string, error) {
-	if s.err != nil {
-		return "", s.err
-	}
-	return s.uri, nil
 }

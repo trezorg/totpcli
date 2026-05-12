@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/trezorg/totpcli/internal/provider"
+	"github.com/trezorg/totpcli/internal/search"
 )
 
 type Engine struct {
@@ -16,7 +17,7 @@ func New(providers []provider.Provider) Engine {
 }
 
 func (e Engine) Search(query string) []provider.Provider {
-	query = normalize(query)
+	query = search.Normalize(query)
 	if query == "" {
 		return slices.Clone(e.providers)
 	}
@@ -31,11 +32,7 @@ func (e Engine) Search(query string) []provider.Provider {
 }
 
 func matches(query string, candidate provider.Provider) bool {
-	return strings.Contains(normalize(candidate.Issuer), query) ||
-		strings.Contains(normalize(candidate.Name), query) ||
-		strings.Contains(normalize(candidate.DisplayLabel()), query)
-}
-
-func normalize(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	return strings.Contains(search.Normalize(candidate.Issuer), query) ||
+		strings.Contains(search.Normalize(candidate.Name), query) ||
+		strings.Contains(search.Normalize(candidate.DisplayLabel()), query)
 }

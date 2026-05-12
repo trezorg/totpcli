@@ -13,6 +13,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var (
+	// ErrTOTPSecretRequired indicates the TOTP secret field is empty.
+	ErrTOTPSecretRequired = errors.New("totpSecret is required")
+	// ErrUnsupportedType indicates the provider type is not TOTP.
+	ErrUnsupportedType = errors.New("unsupported type")
+	// ErrUnsupportedAlgorithm indicates the algorithm is not SHA1, SHA256, or SHA512.
+	ErrUnsupportedAlgorithm = errors.New("unsupported algorithm")
+)
+
 type Format string
 
 const (
@@ -178,18 +187,18 @@ func Normalize(raw RawProvider) (Provider, error) {
 		providerType = "TOTP"
 	}
 	if providerType != "TOTP" {
-		return Provider{}, fmt.Errorf("unsupported type %q: expected TOTP", raw.Type)
+		return Provider{}, fmt.Errorf("%w %q: expected TOTP", ErrUnsupportedType, raw.Type)
 	}
 
 	secret := strings.TrimSpace(raw.TOTPSecret)
 	if secret == "" {
-		return Provider{}, errors.New("totpSecret is required")
+		return Provider{}, ErrTOTPSecretRequired
 	}
 
 	name := strings.TrimSpace(raw.Name)
 	issuer := strings.TrimSpace(raw.Issuer)
 	if name == "" && issuer == "" {
-		return Provider{}, errors.New("issuer or name is required")
+		return Provider{}, errors.New("at least one of issuer or name is required")
 	}
 
 	algorithm, err := normalizeAlgorithm(raw.Algorithm)
@@ -250,7 +259,7 @@ func normalizeAlgorithm(value string) (Algorithm, error) {
 	case "SHA512":
 		return AlgorithmSHA512, nil
 	default:
-		return "", fmt.Errorf("unsupported algorithm %q: expected SHA1, SHA256, or SHA512", value)
+		return "", fmt.Errorf("%w %q: expected SHA1, SHA256, or SHA512", ErrUnsupportedAlgorithm, value)
 	}
 }
 

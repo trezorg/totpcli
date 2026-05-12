@@ -1,8 +1,8 @@
 package provider
 
 import (
+	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -159,8 +159,8 @@ func TestValidateProviderRejectsMissingSecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("Normalize returned nil error for missing TOTP secret")
 	}
-	if !strings.Contains(err.Error(), "totpSecret") {
-		t.Fatalf("error = %q, want mention totpSecret", err.Error())
+	if !errors.Is(err, ErrTOTPSecretRequired) {
+		t.Fatalf("error = %q, want ErrTOTPSecretRequired", err.Error())
 	}
 }
 
@@ -175,8 +175,8 @@ func TestValidateProviderRejectsUnsupportedType(t *testing.T) {
 	if err == nil {
 		t.Fatal("Normalize returned nil error for unsupported type")
 	}
-	if !strings.Contains(err.Error(), "type") {
-		t.Fatalf("error = %q, want mention type", err.Error())
+	if !errors.Is(err, ErrUnsupportedType) {
+		t.Fatalf("error = %q, want ErrUnsupportedType", err.Error())
 	}
 }
 

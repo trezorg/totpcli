@@ -40,6 +40,12 @@ Flags for `totpcli import-file`:
 - `--totp`: output SQLite database path. When omitted, the database path is derived from the first provider filename with a `.sqlite` extension.
 - `--format`: provider file format, one of `json`, `yaml`, or `toml`. When omitted, the format is detected from `.json`, `.yaml`, `.yml`, or `.toml`; unknown extensions use JSON.
 
+Flags for `totpcli show`:
+
+- `--totp`: SQLite provider database path. Defaults to `~/totp.sqlite`.
+- `--format`: output format, one of `table`, `json`, `yaml`, or `toml`. Defaults to `table`.
+- `--reveal-secrets`: print secret columns in full. By default, secret columns are redacted.
+
 Cobra provides command help:
 
 ```sh
@@ -57,7 +63,9 @@ Command-line flags take precedence over environment variables. Environment varia
 
 ## SQLite Storage
 
-The database is created automatically when it does not exist. The provider table stores the same provider fields used by the import file formats: `secret`, `name`, `issuer`, `algorithm`, `digits`, `type`, and `totpSecret`.
+The database is created automatically when it does not exist. It is created with owner-only `0600` permissions. The provider table stores the same provider fields used by the import file formats: `secret`, `name`, `issuer`, `algorithm`, `digits`, `type`, and `totpSecret`.
+
+The SQLite database stores TOTP seeds in cleartext. Protect the database file like password material: keep it on a trusted local disk, restrict backups and sync targets, and do not share `show --reveal-secrets` output.
 
 When importing, duplicates are matched by trimmed issuer, trimmed name, and normalized `totpSecret`. Duplicate records are overridden with the imported values.
 

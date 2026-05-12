@@ -59,6 +59,17 @@ Machine-readable `show` output SHALL include a top-level collection of tables wh
 - **THEN** the output includes the table name before that table's rendered rows
 - **AND** the rendered table includes column headers
 
+### Requirement: Show secret redaction
+The `show` command SHALL redact secret-bearing columns by default. The command SHALL support a `--reveal-secrets` flag that intentionally prints raw secret values for explicit inspection.
+
+#### Scenario: Secret columns are redacted by default
+- **WHEN** the user runs `totpcli show --totp /tmp/providers.sqlite --format json`
+- **THEN** secret-bearing columns such as `secret`, `totp_secret`, and `totp_secret_key` are redacted in the output
+
+#### Scenario: Secret columns can be revealed explicitly
+- **WHEN** the user runs `totpcli show --totp /tmp/providers.sqlite --format json --reveal-secrets`
+- **THEN** secret-bearing columns are printed with their stored values
+
 ### Requirement: Show error handling
 The `show` command SHALL report database path, open, schema initialization, table discovery, row scanning, and output encoding failures as command errors and exit non-zero.
 
