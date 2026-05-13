@@ -1,9 +1,7 @@
 ## Purpose
 
 Define SQLite-backed TOTP provider storage, database path resolution, repository boundaries, schema initialization, and import upsert behavior.
-
 ## Requirements
-
 ### Requirement: SQLite database path resolution
 The system SHALL resolve the provider storage path to a SQLite database file. When a command receives an explicit provider storage path through `--totp` or `TOTPCLI_TOTP_PATH`, the system SHALL expand `~` and SHALL use the path unchanged when it ends in `.sqlite`; otherwise it SHALL replace the final extension with `.sqlite`. When no explicit storage path is provided, the system SHALL derive a `.sqlite` database path from the command's default or input filename.
 
@@ -44,7 +42,7 @@ The system SHALL open the resolved SQLite database at command startup and SHALL 
 - **THEN** the command reports an error and exits non-zero
 
 ### Requirement: Provider repository boundary
-Application code SHALL use a repository abstraction for SQLite communication. Command handlers and import services SHALL list providers, initialize storage, inspect tables, insert one manually added provider, and upsert imported providers through repository methods instead of issuing SQL statements directly.
+Application code SHALL use a repository abstraction for SQLite communication. Command handlers and import services SHALL list providers, initialize storage, inspect tables, insert one manually added provider, delete one selected provider, and upsert imported providers through repository methods instead of issuing SQL statements directly.
 
 #### Scenario: TOTP display reads through repository
 - **WHEN** the TOTP workflow starts
@@ -57,6 +55,10 @@ Application code SHALL use a repository abstraction for SQLite communication. Co
 #### Scenario: Add writes through repository
 - **WHEN** the add workflow persists a provider
 - **THEN** the add workflow inserts the provider by calling the provider repository
+
+#### Scenario: Delete writes through repository
+- **WHEN** the delete workflow removes a provider
+- **THEN** the delete workflow deletes the selected provider by calling the provider repository
 
 ### Requirement: Provider single insert
 The repository SHALL support saving one provider record for direct manual creation. The repository SHALL normalize the provider with the same validation rules used by imports, SHALL canonicalize `totpSecret` for duplicate detection, SHALL insert non-duplicate providers, and SHALL update duplicate providers without creating an additional record.
@@ -92,3 +94,34 @@ The repository SHALL detect duplicate providers by trimmed issuer, trimmed name,
 #### Scenario: Import reports overridden records
 - **WHEN** an import overrides one existing provider and inserts two new providers
 - **THEN** the import result reports one overridden provider, two added providers, and the final provider count
+
+### Requirement: Provider single delete
+The repository SHALL support deleting one provider record selected by trimmed issuer, trimmed name, and optional normalized `totpSecret`. The repository SHALL delete the provider only when the selector matches exactly one row. No matching row, multiple matching rows, and invalid selector values SHALL return errors without deleting any provider row.
+
+#### Scenario: Single matching provider is deleted
+- **WHEN** the database contains one provider with issuer `GitHub`, name `trezorg`, and TOTP secret `JBSWY3DPEHPK3PXP`
+- **AND** the repository receives a delete selector with issuer `GitHub` and name `trezorg`
+- **THEN** the repository deletes that provider row
+- **AND** no other provider row is deleted
+
+#### Scenario: TOTP secret selector uses canonical matching
+- **WHEN** the database contains one provider with issuer `GitHub` and canonical TOTP secret key for `JBSWY3DPEHPK3PXP`
+- **AND** the repository receives a delete selector with issuer `GitHub` and equivalent normalized TOTP secret `jbswy3dpehpk3pxp`
+- **THEN** the repository deletes that provider row
+
+#### Scenario: No matching provider is not deleted
+- **WHEN** the database does not contain a provider matching the delete selector
+- **THEN** the repository returns a not-found error
+- **AND** no provider row is deleted
+
+#### Scenario: Ambiguous matching providers are not deleted
+- **WHEN** the database contains two providers with issuer `GitHub`
+- **AND** the repository receives a delete selector with only issuer `GitHub`
+- **THEN** the repository returns an ambiguous selector error
+- **AND** no provider row is deleted
+
+#### Scenario: Invalid delete selector is rejected
+- **WHEN** the repository receives a delete selector without issuer and without name
+- **THEN** the repository returns a validation error
+- **AND** no provider row is deleted
+

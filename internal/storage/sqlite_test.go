@@ -430,6 +430,108 @@ func TestSQLiteRepositoryRejectsInvalidInsertProvider(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryDeletesSingleProvider(t *testing.T) {
+	t.Parallel()
+
+	repo := openTestSQLite(t)
+	seedTestProviders(t, repo, []provider.RawProvider{
+		{Name: "trezorg", Issuer: "GitHub", Type: "TOTP", TOTPSecret: "JBSWY3DPEHPK3PXP"},
+		{Issuer: "AWS", Type: "TOTP", TOTPSecret: "JBSWY3DPEHPK3PXP"},
+	})
+
+	deleted, err := repo.DeleteProvider(DeleteSelector{Issuer: " GitHub ", Name: " trezorg "})
+	if err != nil {
+		t.Fatalf("DeleteProvider returned error: %v", err)
+	}
+	if deleted.DisplayLabel() != "GitHub/trezorg" {
+		t.Fatalf("deleted label = %q, want GitHub/trezorg", deleted.DisplayLabel())
+	}
+
+	providers, err := repo.ListProviders()
+	if err != nil {
+		t.Fatalf("ListProviders returned error: %v", err)
+	}
+	if len(providers) != 1 || providers[0].DisplayLabel() != "AWS" {
+		t.Fatalf("providers = %#v, want AWS only", providers)
+	}
+}
+
+func TestSQLiteRepositoryDeletesWithCanonicalTOTPSecretSelector(t *testing.T) {
+	t.Parallel()
+
+	repo := openTestSQLite(t)
+	seedTestProviders(t, repo, []provider.RawProvider{
+		{Name: "trezorg", Issuer: "GitHub", Type: "TOTP", TOTPSecret: "NBUQ===="},
+		{Name: "root", Issuer: "GitHub", Type: "TOTP", TOTPSecret: "JBSWY3DPEHPK3PXP"},
+	})
+
+	deleted, err := repo.DeleteProvider(DeleteSelector{Issuer: "GitHub", TOTPSecret: "nbuq"})
+	if err != nil {
+		t.Fatalf("DeleteProvider returned error: %v", err)
+	}
+	if deleted.DisplayLabel() != "GitHub/trezorg" {
+		t.Fatalf("deleted label = %q, want GitHub/trezorg", deleted.DisplayLabel())
+	}
+
+	providers, err := repo.ListProviders()
+	if err != nil {
+		t.Fatalf("ListProviders returned error: %v", err)
+	}
+	if len(providers) != 1 || providers[0].DisplayLabel() != "GitHub/root" {
+		t.Fatalf("providers = %#v, want GitHub/root only", providers)
+	}
+}
+
+func TestSQLiteRepositoryDeleteProviderErrorsWithoutDeleting(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		selector DeleteSelector
+		wantErr  error
+	}{
+		"not found": {
+			selector: DeleteSelector{Issuer: "Missing"},
+			wantErr:  ErrProviderNotFound,
+		},
+		"ambiguous": {
+			selector: DeleteSelector{Issuer: "GitHub"},
+			wantErr:  ErrProviderDeleteAmbiguous,
+		},
+		"invalid selector": {
+			selector: DeleteSelector{},
+			wantErr:  ErrProviderDeleteSelectorInvalid,
+		},
+		"invalid totp secret": {
+			selector: DeleteSelector{Issuer: "GitHub", TOTPSecret: "not-base32"},
+			wantErr:  ErrProviderDeleteSelectorInvalid,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			repo := openTestSQLite(t)
+			seedTestProviders(t, repo, []provider.RawProvider{
+				{Name: "trezorg", Issuer: "GitHub", Type: "TOTP", TOTPSecret: "JBSWY3DPEHPK3PXP"},
+				{Name: "root", Issuer: "GitHub", Type: "TOTP", TOTPSecret: "NBUQ===="},
+			})
+
+			_, err := repo.DeleteProvider(tt.selector)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("DeleteProvider error = %v, want %v", err, tt.wantErr)
+			}
+			providers, err := repo.ListProviders()
+			if err != nil {
+				t.Fatalf("ListProviders returned error: %v", err)
+			}
+			if len(providers) != 2 {
+				t.Fatalf("providers = %#v, want unchanged two providers", providers)
+			}
+		})
+	}
+}
+
 func TestSQLiteRepositoryInspectsTables(t *testing.T) {
 	t.Parallel()
 
@@ -494,4 +596,12 @@ func openTestSQLite(t *testing.T) *SQLiteRepository {
 		t.Fatalf("Init returned error: %v", err)
 	}
 	return repo
+}
+
+func seedTestProviders(t *testing.T, repo *SQLiteRepository, providers []provider.RawProvider) {
+	t.Helper()
+
+	if _, err := repo.UpsertProviders(providers); err != nil {
+		t.Fatalf("seed test providers: %v", err)
+	}
 }

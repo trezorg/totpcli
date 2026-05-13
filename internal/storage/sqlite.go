@@ -30,11 +30,25 @@ type TableSnapshot struct {
 	Rows    []map[string]any `json:"rows" yaml:"rows" toml:"rows"`
 }
 
+var (
+	ErrProviderNotFound              = errors.New("provider not found")
+	ErrProviderDeleteAmbiguous       = errors.New("provider delete selector is ambiguous")
+	ErrProviderDeleteSelectorInvalid = errors.New("provider delete selector is invalid")
+)
+
+type DeleteSelector struct {
+	Issuer     string
+	Name       string
+	TOTPSecret string
+}
+
 type SQLiteRepository struct {
 	path string
 	db   *sql.DB
 }
 
+// ResolveDatabasePath expands ~ and ensures the path ends with .sqlite.
+// If the path has a non-.sqlite extension, that extension is replaced.
 func ResolveDatabasePath(input string, fallback string, home string) (string, error) {
 	path := strings.TrimSpace(input)
 	if path == "" {
@@ -136,7 +150,7 @@ CREATE TABLE IF NOT EXISTS providers (
 	return nil
 }
 
-func (r *SQLiteRepository) ListProviders() ([]provider.Provider, error) {
+func (r *SQLiteRepository) ListProviders() (providers []provider.Provider, err error) {
 	rows, err := r.db.Query(`
 SELECT id, secret, name, issuer, algorithm, digits, type, totp_secret
 FROM providers
@@ -144,11 +158,13 @@ ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list providers: %w", err)
 	}
+	// Named return err is set here so bare returns propagate the close error.
 	defer func() {
-		_ = rows.Close()
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close provider rows: %w", cerr)
+		}
 	}()
 
-	var providers []provider.Provider
 	for rows.Next() {
 		var id int64
 		var raw provider.RawProvider
@@ -169,7 +185,7 @@ ORDER BY id`)
 	return providers, nil
 }
 
-func (r *SQLiteRepository) InspectTables() ([]TableSnapshot, error) {
+func (r *SQLiteRepository) InspectTables() (tables []TableSnapshot, err error) {
 	rows, err := r.db.Query(`
 SELECT name
 FROM sqlite_schema
@@ -178,8 +194,11 @@ ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list sqlite tables: %w", err)
 	}
+	// Named return err is set here so bare returns propagate the close error.
 	defer func() {
-		_ = rows.Close()
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close table rows: %w", cerr)
+		}
 	}()
 
 	var names []string
@@ -194,7 +213,7 @@ ORDER BY name`)
 		return nil, fmt.Errorf("iterate sqlite table names: %w", err)
 	}
 
-	tables := make([]TableSnapshot, 0, len(names))
+	tables = make([]TableSnapshot, 0, len(names))
 	for _, name := range names {
 		table, err := r.inspectTable(name)
 		if err != nil {
@@ -203,6 +222,27 @@ ORDER BY name`)
 		tables = append(tables, table)
 	}
 	return tables, nil
+}
+
+func withTx(db *sql.DB, fn func(*sql.Tx) error) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 func (r *SQLiteRepository) InsertProvider(raw provider.RawProvider) (provider.Provider, error) {
@@ -215,43 +255,69 @@ func (r *SQLiteRepository) InsertProvider(raw provider.RawProvider) (provider.Pr
 		return provider.Provider{}, err
 	}
 
-	tx, err := r.db.Begin()
-	if err != nil {
-		return provider.Provider{}, fmt.Errorf("begin provider insert: %w", err)
+	if err := withTx(r.db, func(tx *sql.Tx) error {
+		_, err := upsertOne(tx, normalized, key)
+		return err
+	}); err != nil {
+		return provider.Provider{}, fmt.Errorf("insert provider: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if _, err := upsertOne(tx, normalized, key); err != nil {
-		return provider.Provider{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return provider.Provider{}, fmt.Errorf("commit provider upsert: %w", err)
-	}
-	committed = true
 	return normalized, nil
 }
 
-func (r *SQLiteRepository) inspectTable(name string) (TableSnapshot, error) {
+func (r *SQLiteRepository) DeleteProvider(selector DeleteSelector) (provider.Provider, error) {
+	normalized, key, err := normalizeDeleteSelector(selector)
+	if err != nil {
+		return provider.Provider{}, err
+	}
+
+	var deleted provider.Provider
+	if err := withTx(r.db, func(tx *sql.Tx) error {
+		matches, err := selectDeleteCandidates(tx, normalized, key)
+		if err != nil {
+			return err
+		}
+		switch len(matches) {
+		case 0:
+			return ErrProviderNotFound
+		case 1:
+			deleted = matches[0].provider
+		default:
+			return ErrProviderDeleteAmbiguous
+		}
+
+		if _, err := tx.Exec(`DELETE FROM providers WHERE id = ?`, matches[0].id); err != nil {
+			return fmt.Errorf("delete provider: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return provider.Provider{}, fmt.Errorf("delete provider: %w", err)
+	}
+	return deleted, nil
+}
+
+func (r *SQLiteRepository) inspectTable(name string) (snapshot TableSnapshot, err error) {
 	columns, err := r.tableColumns(name)
 	if err != nil {
 		return TableSnapshot{}, err
 	}
 
-	query := fmt.Sprintf("SELECT * FROM %s ORDER BY rowid", quoteSQLiteIdentifier(name))
+	quoted, err := quoteSQLiteIdentifier(name)
+	if err != nil {
+		return TableSnapshot{}, fmt.Errorf("inspect sqlite table %q: %w", name, err)
+	}
+	query := fmt.Sprintf("SELECT * FROM %s ORDER BY rowid", quoted)
 	rows, err := r.db.Query(query)
 	if err != nil {
 		return TableSnapshot{}, fmt.Errorf("inspect sqlite table %q: %w", name, err)
 	}
+	// Named return err is set here so bare returns propagate the close error.
 	defer func() {
-		_ = rows.Close()
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close inspect rows: %w", cerr)
+		}
 	}()
 
-	snapshot := TableSnapshot{Name: name, Columns: columns}
+	snapshot = TableSnapshot{Name: name, Columns: columns}
 	for rows.Next() {
 		values := make([]any, len(columns))
 		dest := make([]any, len(columns))
@@ -274,16 +340,22 @@ func (r *SQLiteRepository) inspectTable(name string) (TableSnapshot, error) {
 	return snapshot, nil
 }
 
-func (r *SQLiteRepository) tableColumns(name string) ([]string, error) {
-	rows, err := r.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", quoteSQLiteIdentifier(name)))
+func (r *SQLiteRepository) tableColumns(name string) (columns []string, err error) {
+	quoted, err := quoteSQLiteIdentifier(name)
 	if err != nil {
 		return nil, fmt.Errorf("inspect sqlite table %q columns: %w", name, err)
 	}
+	rows, err := r.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", quoted))
+	if err != nil {
+		return nil, fmt.Errorf("inspect sqlite table %q columns: %w", name, err)
+	}
+	// Named return err is set here so bare returns propagate the close error.
 	defer func() {
-		_ = rows.Close()
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close column rows: %w", cerr)
+		}
 	}()
 
-	var columns []string
 	for rows.Next() {
 		var cid int
 		var columnName string
@@ -303,45 +375,35 @@ func (r *SQLiteRepository) tableColumns(name string) ([]string, error) {
 }
 
 func (r *SQLiteRepository) UpsertProviders(imports []provider.RawProvider) (ImportResult, error) {
-	tx, err := r.db.Begin()
-	if err != nil {
-		return ImportResult{}, fmt.Errorf("begin provider import: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
 	result := ImportResult{OutputPath: r.path, Imported: len(imports)}
-	for i, raw := range imports {
-		normalized, err := provider.Normalize(raw)
-		if err != nil {
-			return ImportResult{}, fmt.Errorf("provider %d: %w", i+1, err)
+	if err := withTx(r.db, func(tx *sql.Tx) error {
+		for i, raw := range imports {
+			normalized, err := provider.Normalize(raw)
+			if err != nil {
+				return fmt.Errorf("provider %d: %w", i+1, err)
+			}
+			key, err := totpsecret.CanonicalBase32(normalized.TOTPSecret)
+			if err != nil {
+				return fmt.Errorf("provider %d: %w", i+1, err)
+			}
+			added, err := upsertOne(tx, normalized, key)
+			if err != nil {
+				return fmt.Errorf("upsert provider %d: %w", i+1, err)
+			}
+			if added {
+				result.Added++
+			} else {
+				result.Overridden++
+			}
 		}
-		key, err := totpsecret.CanonicalBase32(normalized.TOTPSecret)
-		if err != nil {
-			return ImportResult{}, fmt.Errorf("provider %d: %w", i+1, err)
-		}
-		added, err := upsertOne(tx, normalized, key)
-		if err != nil {
-			return ImportResult{}, fmt.Errorf("upsert provider %d: %w", i+1, err)
-		}
-		if added {
-			result.Added++
-		} else {
-			result.Overridden++
-		}
-	}
 
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM providers`).Scan(&result.Final); err != nil {
-		return ImportResult{}, fmt.Errorf("count providers: %w", err)
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM providers`).Scan(&result.Final); err != nil {
+			return fmt.Errorf("count providers: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return ImportResult{}, fmt.Errorf("import providers: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return ImportResult{}, fmt.Errorf("commit provider import: %w", err)
-	}
-	committed = true
 	return result, nil
 }
 
@@ -393,6 +455,72 @@ WHERE id = ?`,
 	}
 }
 
+type deleteCandidate struct {
+	id       int64
+	provider provider.Provider
+}
+
+func normalizeDeleteSelector(selector DeleteSelector) (DeleteSelector, string, error) {
+	normalized := DeleteSelector{
+		Issuer:     strings.TrimSpace(selector.Issuer),
+		Name:       strings.TrimSpace(selector.Name),
+		TOTPSecret: strings.TrimSpace(selector.TOTPSecret),
+	}
+	if normalized.Issuer == "" && normalized.Name == "" {
+		return DeleteSelector{}, "", fmt.Errorf("%w: at least one of issuer or name is required", ErrProviderDeleteSelectorInvalid)
+	}
+	if normalized.TOTPSecret == "" {
+		return normalized, "", nil
+	}
+	key, err := totpsecret.CanonicalBase32(normalized.TOTPSecret)
+	if err != nil {
+		return DeleteSelector{}, "", fmt.Errorf("%w: %w", ErrProviderDeleteSelectorInvalid, err)
+	}
+	return normalized, key, nil
+}
+
+func selectDeleteCandidates(tx *sql.Tx, selector DeleteSelector, key string) (matches []deleteCandidate, err error) {
+	query := `
+SELECT id, secret, name, issuer, algorithm, digits, type, totp_secret
+FROM providers
+WHERE (? = '' OR issuer = ?)
+  AND (? = '' OR name = ?)
+  AND (? = '' OR totp_secret_key = ?)
+ORDER BY id`
+	rows, err := tx.Query(query,
+		selector.Issuer, selector.Issuer,
+		selector.Name, selector.Name,
+		key, key,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("select provider delete candidates: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close provider delete candidates: %w", cerr)
+		}
+	}()
+
+	for rows.Next() {
+		var id int64
+		var raw provider.RawProvider
+		var digits int
+		if err := rows.Scan(&id, &raw.Secret, &raw.Name, &raw.Issuer, &raw.Algorithm, &digits, &raw.Type, &raw.TOTPSecret); err != nil {
+			return nil, fmt.Errorf("scan provider delete candidate: %w", err)
+		}
+		raw.Digits = strconv.Itoa(digits)
+		normalized, err := provider.Normalize(raw)
+		if err != nil {
+			return nil, fmt.Errorf("stored provider id %d: %w", id, err)
+		}
+		matches = append(matches, deleteCandidate{id: id, provider: normalized})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate provider delete candidates: %w", err)
+	}
+	return matches, nil
+}
+
 func normalizeSQLiteValue(value any) any {
 	switch typed := value.(type) {
 	case []byte:
@@ -402,6 +530,9 @@ func normalizeSQLiteValue(value any) any {
 	}
 }
 
-func quoteSQLiteIdentifier(identifier string) string {
-	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+func quoteSQLiteIdentifier(identifier string) (string, error) {
+	if strings.ContainsRune(identifier, 0) {
+		return "", fmt.Errorf("sqlite identifier %q contains null byte", identifier)
+	}
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`, nil
 }

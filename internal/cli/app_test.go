@@ -472,6 +472,224 @@ func TestRunAddSubcommandRejectsUnsupportedFlags(t *testing.T) {
 	}
 }
 
+func TestRunDeleteSubcommandDeletesProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	seedProviderDatabase(t, path, []provider.RawProvider{
+		{Name: "trezorg", Issuer: "GitHub", Type: "TOTP", TOTPSecret: addSHA1Secret},
+		{Issuer: "AWS", Type: "TOTP", TOTPSecret: addSHA1Secret},
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &stdout,
+		Stderr: &stderr,
+		RunTUI: func(tui.Model) error {
+			t.Fatal("RunTUI called for delete command")
+			return nil
+		},
+	}
+
+	code := app.Run([]string{"delete", "--issuer", "GitHub", "--name", "trezorg", "--totp", path})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), path) || !strings.Contains(stdout.String(), "GitHub/trezorg") {
+		t.Fatalf("stdout = %q, want delete summary with path and provider label", stdout.String())
+	}
+	assertProviderLabels(t, loadProviderDatabase(t, path), []string{"AWS"})
+}
+
+func TestRunDeleteSubcommandAllowsIssuerOnlyNameOnlyAndSecretDisambiguation(t *testing.T) {
+	t.Run("issuer only", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "providers.sqlite")
+		seedProviderDatabase(t, path, []provider.RawProvider{
+			{Issuer: "AWS", Type: "TOTP", TOTPSecret: addSHA1Secret},
+			{Name: "trezorg", Issuer: "GitHub", Type: "TOTP", TOTPSecret: addSHA1Secret},
+		})
+
+		var stderr bytes.Buffer
+		app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+		code := app.Run([]string{"delete", "--issuer", "AWS", "--totp", path})
+		if code != 0 {
+			t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+		}
+		assertProviderLabels(t, loadProviderDatabase(t, path), []string{"GitHub/trezorg"})
+	})
+
+	t.Run("name only", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "providers.sqlite")
+		seedProviderDatabase(t, path, []provider.RawProvider{
+			{Name: "trezorg", Type: "TOTP", TOTPSecret: addSHA1Secret},
+			{Issuer: "AWS", Type: "TOTP", TOTPSecret: addSHA1Secret},
+		})
+
+		var stderr bytes.Buffer
+		app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+		code := app.Run([]string{"delete", "--name", "trezorg", "--totp", path})
+		if code != 0 {
+			t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+		}
+		assertProviderLabels(t, loadProviderDatabase(t, path), []string{"AWS"})
+	})
+
+	t.Run("totp secret disambiguation", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "providers.sqlite")
+		seedProviderDatabase(t, path, []provider.RawProvider{
+			{Name: "trezorg", Issuer: "GitHub", Type: "TOTP", TOTPSecret: addSHA1Secret},
+			{Name: "root", Issuer: "GitHub", Type: "TOTP", TOTPSecret: addSHA256Secret},
+		})
+
+		var stderr bytes.Buffer
+		app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+		code := app.Run([]string{"delete", "--issuer", "GitHub", "--totp-secret", addSHA1Secret, "--totp", path})
+		if code != 0 {
+			t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+		}
+		assertProviderLabels(t, loadProviderDatabase(t, path), []string{"GitHub/root"})
+	})
+}
+
+func TestRunDeleteSubcommandResolvesEnvironmentAndDefaultDatabasePaths(t *testing.T) {
+	t.Run("environment", func(t *testing.T) {
+		envPath := filepath.Join(t.TempDir(), "env.sqlite")
+		seedProviderDatabase(t, envPath, []provider.RawProvider{{Issuer: "GitHub", Type: "TOTP", TOTPSecret: addSHA1Secret}})
+		t.Setenv("TOTPCLI_TOTP_PATH", envPath)
+
+		var stderr bytes.Buffer
+		app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+		code := app.Run([]string{"delete", "--issuer", "GitHub"})
+		if code != 0 {
+			t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+		}
+		assertProviderLabels(t, loadProviderDatabase(t, envPath), nil)
+	})
+
+	t.Run("default", func(t *testing.T) {
+		home := t.TempDir()
+		defaultPath := filepath.Join(home, "totp.sqlite")
+		seedProviderDatabase(t, defaultPath, []provider.RawProvider{{Issuer: "GitHub", Type: "TOTP", TOTPSecret: addSHA1Secret}})
+
+		var stderr bytes.Buffer
+		app := App{Home: home, Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+		code := app.Run([]string{"delete", "--issuer", "GitHub"})
+		if code != 0 {
+			t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+		}
+		assertProviderLabels(t, loadProviderDatabase(t, defaultPath), nil)
+	})
+}
+
+func TestRunDeleteSubcommandRejectsInvalidInputBeforeOpeningDatabase(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string][]string{
+		"missing identity":    {"delete"},
+		"invalid totp secret": {"delete", "--issuer", "GitHub", "--totp-secret", "not-base32"},
+	}
+
+	for name, args := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var stderr bytes.Buffer
+			app := App{
+				Home:   t.TempDir(),
+				Stdout: &bytes.Buffer{},
+				Stderr: &stderr,
+				NewRepository: func(string) (providerRepository, error) {
+					t.Fatal("NewRepository called before delete input validation")
+					return nil, nil
+				},
+			}
+
+			code := app.Run(args)
+			if code != 2 {
+				t.Fatalf("Run exit code = %d, want 2", code)
+			}
+			if stderr.String() == "" {
+				t.Fatal("stderr is empty, want validation error")
+			}
+		})
+	}
+}
+
+func TestRunDeleteSubcommandReportsSelectionErrorsWithoutDeleting(t *testing.T) {
+	tests := map[string]struct {
+		args    []string
+		wantErr string
+	}{
+		"not found": {
+			args:    []string{"delete", "--issuer", "Missing"},
+			wantErr: "no matching provider",
+		},
+		"ambiguous": {
+			args:    []string{"delete", "--issuer", "GitHub"},
+			wantErr: "ambiguous",
+		},
+		"partial selector": {
+			args:    []string{"delete", "--issuer", "Git"},
+			wantErr: "no matching provider",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "providers.sqlite")
+			seedProviderDatabase(t, path, []provider.RawProvider{
+				{Name: "trezorg", Issuer: "GitHub", Type: "TOTP", TOTPSecret: addSHA1Secret},
+				{Name: "root", Issuer: "GitHub", Type: "TOTP", TOTPSecret: addSHA256Secret},
+			})
+
+			var stderr bytes.Buffer
+			args := append(append([]string{}, tt.args...), "--totp", path)
+			app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+			code := app.Run(args)
+			if code == 0 {
+				t.Fatal("Run exit code = 0, want error")
+			}
+			if !strings.Contains(stderr.String(), tt.wantErr) {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), tt.wantErr)
+			}
+			assertProviderLabels(t, loadProviderDatabase(t, path), []string{"GitHub/trezorg", "GitHub/root"})
+		})
+	}
+}
+
+func TestRunDeleteSubcommandRejectsUnsupportedFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string][]string{
+		"format": {"delete", "--issuer", "GitHub", "--format", "json"},
+		"type":   {"delete", "--issuer", "GitHub", "--type", "TOTP"},
+		"id":     {"delete", "--id", "1"},
+	}
+
+	for name, args := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var stderr bytes.Buffer
+			app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+			code := app.Run(args)
+			if code != 2 {
+				t.Fatalf("Run exit code = %d, want 2", code)
+			}
+			if !strings.Contains(stderr.String(), "unknown flag") {
+				t.Fatalf("stderr = %q, want unknown flag error", stderr.String())
+			}
+		})
+	}
+}
+
 func TestRunImportConvertsNonSQLiteOutputPath(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "providers.yaml")
 	dbPath := strings.TrimSuffix(outputPath, ".yaml") + ".sqlite"
@@ -1069,6 +1287,7 @@ func TestRunHelpListsFlagsAndEnvironment(t *testing.T) {
 	for _, want := range []string{
 		"totp",
 		"add",
+		"delete",
 		"import",
 		"import-file",
 		"show",
@@ -1110,6 +1329,13 @@ func TestRunSubcommandHelpListsRelevantFlags(t *testing.T) {
 			"--algorithm",
 			"--digits",
 		},
+		"delete": {
+			"provider",
+			"--totp",
+			"--issuer",
+			"--name",
+			"--totp-secret",
+		},
 		"import": {
 			"qr-image",
 			"--totp",
@@ -1147,6 +1373,13 @@ func TestRunSubcommandHelpListsRelevantFlags(t *testing.T) {
 			}
 			if command == "add" {
 				for _, unwanted := range []string{"--format", "--type"} {
+					if strings.Contains(stdout.String(), unwanted) {
+						t.Fatalf("%s help includes %q unexpectedly:\n%s", command, unwanted, stdout.String())
+					}
+				}
+			}
+			if command == "delete" {
+				for _, unwanted := range []string{"--format", "--type", "--id"} {
 					if strings.Contains(stdout.String(), unwanted) {
 						t.Fatalf("%s help includes %q unexpectedly:\n%s", command, unwanted, stdout.String())
 					}

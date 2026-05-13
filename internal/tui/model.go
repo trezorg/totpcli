@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -50,17 +51,19 @@ type styleSchema struct {
 	err              lipgloss.Style
 }
 
-var styles = styleSchema{
-	search:           lipgloss.NewStyle().Foreground(lipgloss.Color("81")),
-	providerRow:      lipgloss.NewStyle().Foreground(lipgloss.Color("252")),
-	selectedProvider: lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Bold(true),
-	codeLabel:        lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
-	codeValue:        lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true),
-	remaining:        lipgloss.NewStyle().Foreground(lipgloss.Color("220")),
-	empty:            lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true),
-	help:             lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
-	err:              lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true),
-}
+var defaultStyles = sync.OnceValue(func() styleSchema {
+	return styleSchema{
+		search:           lipgloss.NewStyle().Foreground(lipgloss.Color("81")),
+		providerRow:      lipgloss.NewStyle().Foreground(lipgloss.Color("252")),
+		selectedProvider: lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Bold(true),
+		codeLabel:        lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
+		codeValue:        lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true),
+		remaining:        lipgloss.NewStyle().Foreground(lipgloss.Color("220")),
+		empty:            lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true),
+		help:             lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
+		err:              lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true),
+	}
+})
 
 func NewModel(providers []provider.Provider, engine SearchEngine, initialSearch string, generator CodeGenerator, now func() time.Time) Model {
 	input := textinput.New()
@@ -127,12 +130,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	s := defaultStyles()
 	var b strings.Builder
-	b.WriteString(styles.search.Render(m.input.View()))
+	b.WriteString(s.search.Render(m.input.View()))
 	b.WriteString("\n\n")
 
 	if len(m.filtered) == 0 {
-		b.WriteString(styles.empty.Render("No providers found."))
+		b.WriteString(s.empty.Render("No providers found."))
 		b.WriteString("\n")
 	} else {
 		for i, candidate := range m.filtered {
@@ -142,24 +146,24 @@ func (m Model) View() string {
 			}
 			row := fmt.Sprintf("%s %s", cursor, candidate.DisplayLabel())
 			if i == m.cursor {
-				b.WriteString(styles.selectedProvider.Render(row))
+				b.WriteString(s.selectedProvider.Render(row))
 			} else {
-				b.WriteString(styles.providerRow.Render(row))
+				b.WriteString(s.providerRow.Render(row))
 			}
 			b.WriteString("\n")
 		}
 	}
 
 	if m.err != nil {
-		fmt.Fprintf(&b, "\n%s\n", styles.err.Render(fmt.Sprintf("Error: %v", m.err)))
+		fmt.Fprintf(&b, "\n%s\n", s.err.Render(fmt.Sprintf("Error: %v", m.err)))
 	} else if m.code != "" && m.selected != nil {
-		fmt.Fprintf(&b, "\n%s\n", styles.selectedProvider.Render(m.selected.DisplayLabel()))
-		fmt.Fprintf(&b, "%s %s\n", styles.codeLabel.Render("Code:"), styles.codeValue.Render(m.code))
-		fmt.Fprintf(&b, "%s\n", styles.remaining.Render(fmt.Sprintf("Remaining: %ds", m.remaining)))
+		fmt.Fprintf(&b, "\n%s\n", s.selectedProvider.Render(m.selected.DisplayLabel()))
+		fmt.Fprintf(&b, "%s %s\n", s.codeLabel.Render("Code:"), s.codeValue.Render(m.code))
+		fmt.Fprintf(&b, "%s\n", s.remaining.Render(fmt.Sprintf("Remaining: %ds", m.remaining)))
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styles.help.Render("Enter selects. q quits."))
+	b.WriteString(s.help.Render("Enter selects. q quits."))
 	b.WriteString("\n")
 	return b.String()
 }
@@ -194,6 +198,8 @@ func (m *Model) Select() bool {
 		return false
 	}
 
+	// Copy to heap: m.filtered may be reallocated by applySearch,
+	// so we cannot store a pointer into the underlying array.
 	selected := m.filtered[m.cursor]
 	m.selected = &selected
 	m.Refresh()
@@ -239,10 +245,12 @@ func (m Model) Err() error {
 
 func (m *Model) applySearch() {
 	m.filtered = m.engine.Search(m.input.Value())
-	if m.cursor >= len(m.filtered) {
+	switch {
+	case len(m.filtered) == 0:
+		m.cursor = 0
+	case m.cursor >= len(m.filtered):
 		m.cursor = len(m.filtered) - 1
-	}
-	if m.cursor < 0 {
+	case m.cursor < 0:
 		m.cursor = 0
 	}
 }

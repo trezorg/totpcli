@@ -257,32 +257,12 @@ func (ProviderConverter) Convert(payload MigrationPayload) ([]provider.RawProvid
 			Type:       "TOTP",
 			TOTPSecret: encoder.EncodeToString(account.Secret),
 		}
-		normalized, err := provider.Normalize(raw)
-		if err != nil {
-			return nil, fmt.Errorf("account %d provider conversion: %w", i+1, err)
+		if raw.Name == "" && raw.Issuer == "" {
+			return nil, fmt.Errorf("account %d: at least one of issuer or name is required", i+1)
 		}
-		providers = append(providers, rawProviderFromNormalized(normalized))
+		providers = append(providers, raw)
 	}
 	return providers, nil
-}
-
-func rawProviderFromNormalized(normalized provider.Provider) provider.RawProvider {
-	digits := fmt.Sprint(normalized.Digits)
-	switch normalized.Digits {
-	case 6:
-		digits = "SIX"
-	case 8:
-		digits = "EIGHT"
-	}
-	return provider.RawProvider{
-		Secret:     normalized.Secret,
-		Name:       normalized.Name,
-		Issuer:     normalized.Issuer,
-		Algorithm:  string(normalized.Algorithm),
-		Digits:     digits,
-		Type:       normalized.Type,
-		TOTPSecret: normalized.TOTPSecret,
-	}
 }
 
 func decodePayload(data []byte) (MigrationPayload, error) {

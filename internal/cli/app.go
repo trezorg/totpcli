@@ -89,11 +89,19 @@ type addOptions struct {
 	digits     string
 }
 
+type deleteOptions struct {
+	path       string
+	issuer     string
+	name       string
+	totpSecret string
+}
+
 type providerRepository interface {
 	Init() error
 	ListProviders() ([]provider.Provider, error)
 	InspectTables() ([]storage.TableSnapshot, error)
 	InsertProvider(provider.RawProvider) (provider.Provider, error)
+	DeleteProvider(storage.DeleteSelector) (provider.Provider, error)
 	UpsertProviders([]provider.RawProvider) (storage.ImportResult, error)
 	Close() error
 }
@@ -107,6 +115,7 @@ func (a App) Run(args []string) int {
 		path string
 	}{}
 	addOpts := addOptions{}
+	deleteOpts := deleteOptions{}
 	importFileOpts := struct {
 		path   string
 		format string
@@ -234,6 +243,50 @@ uses default SHA1, digits use default SIX, and duplicate providers are updated.`
 	addCmd.Flags().StringVar(&addOpts.algorithm, "algorithm", "", "Provider algorithm: SHA1, SHA256, or SHA512 (default SHA1)")
 	addCmd.Flags().StringVar(&addOpts.digits, "digits", "", "Provider digits: SIX, EIGHT, 6, or 8 (default SIX)")
 
+	deleteCmd := &cobra.Command{
+		Use:   "delete",
+		Short: "Delete one TOTP provider from SQLite storage",
+		Long: `Delete one TOTP provider from SQLite storage.
+
+The command deletes only when the supplied issuer, name, and optional TOTP
+secret selector matches exactly one stored provider.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			effectivePath := effectiveString(cmd, "totp", deleteOpts.path, "TOTPCLI_TOTP_PATH")
+			selector := storage.DeleteSelector{
+				Issuer:     deleteOpts.issuer,
+				Name:       deleteOpts.name,
+				TOTPSecret: deleteOpts.totpSecret,
+			}
+			if err := validateDeleteSelector(selector); err != nil {
+				exitCode = 2
+				return err
+			}
+			dbPath, err := storage.ResolveDatabasePath(effectivePath, filepath.Join("~", "totp.sqlite"), a.Home)
+			if err != nil {
+				exitCode = 2
+				return err
+			}
+			repo, err := a.openRepository(dbPath)
+			if err != nil {
+				exitCode = 1
+				return err
+			}
+			defer func() {
+				_ = repo.Close()
+			}()
+			deleted, err := repo.DeleteProvider(selector)
+			if err != nil {
+				exitCode = 1
+				return deleteError(err)
+			}
+			return printDeleteResult(stdout, dbPath, deleted)
+		},
+	}
+	deleteCmd.Flags().StringVar(&deleteOpts.path, "totp", "", "SQLite provider database path (env TOTPCLI_TOTP_PATH)")
+	deleteCmd.Flags().StringVar(&deleteOpts.issuer, "issuer", "", "Provider issuer")
+	deleteCmd.Flags().StringVar(&deleteOpts.name, "name", "", "Provider account name")
+	deleteCmd.Flags().StringVar(&deleteOpts.totpSecret, "totp-secret", "", "Provider TOTP secret for disambiguation")
+
 	importFileCmd := &cobra.Command{
 		Use:   "import-file <provider-file>...",
 		Short: "Import provider files into SQLite storage",
@@ -310,7 +363,7 @@ When --totp is omitted, show reads the default provider database path.`,
 	showCmd.Flags().Var(&showOpts.format, "format", "Show output format: table, json, yaml, or toml")
 	showCmd.Flags().BoolVar(&showOpts.revealSecrets, "reveal-secrets", false, "Reveal secret values in show output")
 
-	cmd.AddCommand(totpCmd, addCmd, importCmd, importFileCmd, showCmd)
+	cmd.AddCommand(totpCmd, addCmd, deleteCmd, importCmd, importFileCmd, showCmd)
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
@@ -435,6 +488,35 @@ func validateAddProvider(raw provider.RawProvider) error {
 
 func printAddResult(output io.Writer, path string, added provider.Provider) error {
 	_, err := fmt.Fprintf(output, "saved provider %s to %s\n", added.DisplayLabel(), path)
+	return err
+}
+
+func validateDeleteSelector(selector storage.DeleteSelector) error {
+	if strings.TrimSpace(selector.Issuer) == "" && strings.TrimSpace(selector.Name) == "" {
+		return errors.New("at least one of issuer or name is required")
+	}
+	if strings.TrimSpace(selector.TOTPSecret) == "" {
+		return nil
+	}
+	if _, err := totpsecret.CanonicalBase32(selector.TOTPSecret); err != nil {
+		return fmt.Errorf("invalid totp secret: %w", err)
+	}
+	return nil
+}
+
+func deleteError(err error) error {
+	switch {
+	case errors.Is(err, storage.ErrProviderNotFound):
+		return fmt.Errorf("no matching provider found")
+	case errors.Is(err, storage.ErrProviderDeleteAmbiguous):
+		return fmt.Errorf("ambiguous provider selector: provide more fields such as --name or --totp-secret")
+	default:
+		return err
+	}
+}
+
+func printDeleteResult(output io.Writer, path string, deleted provider.Provider) error {
+	_, err := fmt.Fprintf(output, "deleted provider %s from %s\n", deleted.DisplayLabel(), path)
 	return err
 }
 
