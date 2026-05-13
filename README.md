@@ -1,115 +1,140 @@
 # totpcli
 
-`totpcli` is a terminal UI for browsing configured TOTP providers, filtering them, and showing the current TOTP code with its remaining lifetime.
+Terminal UI for browsing TOTP providers, filtering them, and displaying the current TOTP code with its remaining lifetime. Providers are stored in a local SQLite database.
 
-Providers are stored in a local SQLite database. JSON, YAML, and TOML provider files are supported as import inputs through `import-file`.
+## Commands
 
-## Usage
-
-Import an existing provider file:
-
-```sh
-go run ./cmd/totpcli import-file ~/totp.json
+```
+totpcli [totp]        Browse TOTP providers (default)
+totpcli add           Add a provider
+totpcli delete        Delete a provider
+totpcli import        Import from a Google Authenticator export QR image
+totpcli import-file   Import from JSON, YAML, or TOML provider files
+totpcli show          Show database contents
 ```
 
-Open the TOTP browser:
+### TUI (`totpcli`, `totpcli totp`)
 
 ```sh
-go run ./cmd/totpcli --totp ~/totp.sqlite --search github --search-engine digram
+totpcli --totp ~/totp.sqlite --search github --search-engine digram
 ```
 
-Import a Google Authenticator export QR image:
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--totp` | `~/totp.sqlite` | Provider database path |
+| `--search` | | Initial search text |
+| `--search-engine` | `digram` | `digram` or `lexical` |
+| `--no-tui` | `false` | Print matching tokens and exit |
+
+### Add (`totpcli add`)
 
 ```sh
-go run ./cmd/totpcli import ~/export.png --totp ~/totp.sqlite
+totpcli add --issuer GitHub --name trezorg --totp-secret JBSWY3DPEHPK3PXP
 ```
 
-Flags for `totpcli` and `totpcli totp`:
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--totp` | `~/totp.sqlite` | Provider database path |
+| `--issuer` | | Provider issuer |
+| `--name` | | Provider account name |
+| `--totp-secret` | | TOTP secret |
+| `--secret` | | Secret metadata |
+| `--algorithm` | `SHA1` | `SHA1`, `SHA256`, or `SHA512` |
+| `--digits` | `SIX` | `SIX`, `EIGHT`, `6`, or `8` |
 
-- `--totp`: provider SQLite database path. Defaults to `~/totp.sqlite`.
-- `--search`: initial search text for the TUI filter.
-- `--search-engine`: provider search engine, either `digram` or `lexical`. Defaults to `digram`.
-- `--no-tui`: print matching tokens and exit without starting the TUI.
-
-Flags for `totpcli import`:
-
-- `--totp`: output SQLite database path. When omitted, the database path is derived from the QR image filename with a `.sqlite` extension.
-
-Flags for `totpcli import-file`:
-
-- `--totp`: output SQLite database path. When omitted, the database path is derived from the first provider filename with a `.sqlite` extension.
-- `--format`: provider file format, one of `json`, `yaml`, or `toml`. When omitted, the format is detected from `.json`, `.yaml`, `.yml`, or `.toml`; unknown extensions use JSON.
-
-Flags for `totpcli show`:
-
-- `--totp`: SQLite provider database path. Defaults to `~/totp.sqlite`.
-- `--format`: output format, one of `table`, `json`, `yaml`, or `toml`. Defaults to `table`.
-- `--reveal-secrets`: print secret columns in full. By default, secret columns are redacted.
-
-Cobra provides command help:
+### Delete (`totpcli delete`)
 
 ```sh
-go run ./cmd/totpcli --help
+totpcli delete --issuer GitHub --name trezorg
 ```
 
-Environment variables can provide defaults when the matching flag is omitted:
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--totp` | `~/totp.sqlite` | Provider database path |
+| `--issuer` | | Provider issuer |
+| `--name` | | Provider account name |
+| `--totp-secret` | | TOTP secret for disambiguation |
 
-- `TOTPCLI_TOTP_PATH`: provider SQLite database path fallback for `--totp`.
-- `TOTPCLI_SEARCH`: initial provider search fallback for `--search`.
-- `TOTPCLI_SEARCH_ENGINE`: provider search engine fallback for `--search-engine`.
-- `TOTPCLI_NO_TUI`: non-interactive mode fallback for `--no-tui`.
+### Import (`totpcli import`)
 
-Command-line flags take precedence over environment variables. Environment variables take precedence over built-in or input-derived defaults.
+```sh
+totpcli import ~/export.png --totp ~/totp.sqlite
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--totp` | derived from QR filename | Output database path |
+
+### Import File (`totpcli import-file`)
+
+```sh
+totpcli import-file ~/totp.json --totp ~/totp.sqlite
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--totp` | derived from first filename | Output database path |
+| `--format` | detected from extension | `json`, `yaml`, or `toml` |
+
+### Show (`totpcli show`)
+
+```sh
+totpcli show --format json --reveal-secrets
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--totp` | `~/totp.sqlite` | Provider database path |
+| `--format` | `table` | `table`, `json`, `yaml`, or `toml` |
+| `--reveal-secrets` | `false` | Show secret columns in full |
+
+## Environment Variables
+
+| Variable | Flag fallback |
+|----------|-------------|
+| `TOTPCLI_TOTP_PATH` | `--totp` |
+| `TOTPCLI_SEARCH` | `--search` |
+| `TOTPCLI_SEARCH_ENGINE` | `--search-engine` |
+| `TOTPCLI_NO_TUI` | `--no-tui` |
+
+Flags take precedence over environment variables, which take precedence over defaults.
 
 ## SQLite Storage
 
-The database is created automatically when it does not exist. It is created with owner-only `0600` permissions. The provider table stores the same provider fields used by the import file formats: `secret`, `name`, `issuer`, `algorithm`, `digits`, `type`, and `totpSecret`.
+The database is created automatically with `0600` permissions. The `providers` table stores: `secret`, `name`, `issuer`, `algorithm`, `digits` (integer), `type`, `totp_secret`, `totp_secret_key` (canonical form for deduplication), plus `id`, `created_at`, and `updated_at`.
 
-The SQLite database stores TOTP seeds in cleartext. Protect the database file like password material: keep it on a trusted local disk, restrict backups and sync targets, and do not share `show --reveal-secrets` output.
+The database stores TOTP seeds in cleartext. Protect the file like password material: keep it on a trusted local disk, restrict backups and sync targets, and do not share `show --reveal-secrets` output.
 
-When importing, duplicates are matched by trimmed issuer, trimmed name, and normalized `totpSecret`. Duplicate records are overridden with the imported values.
+Duplicates are matched by trimmed issuer, trimmed name, and normalized `totp_secret_key`. Existing records are overwritten with imported values.
 
-## Provider Files
+## Provider File Formats
 
-JSON provider files contain an array:
-
+**JSON** — array of objects:
 ```json
-[
-  {
-    "secret": "redacted",
-    "name": "trezorg",
-    "issuer": "GitHub",
-    "algorithm": "SHA1",
-    "digits": "SIX",
-    "type": "TOTP",
-    "totpSecret": "redacted"
-  }
-]
+[{"secret": "...", "name": "trezorg", "issuer": "GitHub", "algorithm": "SHA1", "digits": "SIX", "type": "TOTP", "totpSecret": "..."}]
 ```
 
-YAML uses the same field names:
-
+**YAML** — array entries:
 ```yaml
-- secret: redacted
+- secret: "..."
   name: trezorg
   issuer: GitHub
   algorithm: SHA1
   digits: SIX
   type: TOTP
-  totpSecret: redacted
+  totpSecret: "..."
 ```
 
-TOML uses provider array tables:
-
+**TOML** — `[[providers]]` array tables:
 ```toml
 [[providers]]
-secret = "redacted"
+secret = "..."
 name = "trezorg"
 issuer = "GitHub"
 algorithm = "SHA1"
 digits = "SIX"
 type = "TOTP"
-totpSecret = "redacted"
+totpSecret = "..."
 ```
 
-Supported algorithms are `SHA1`, `SHA256`, and `SHA512`. Supported digits values are `SIX`, `EIGHT`, `6`, and `8`.
+Supported algorithms: `SHA1`, `SHA256`, `SHA512`. Supported digits: `SIX`, `EIGHT`, `6`, `8`.
