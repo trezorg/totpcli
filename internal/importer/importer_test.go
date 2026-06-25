@@ -128,13 +128,73 @@ func TestMigrationDecoderAcceptsVersionTwoPayload(t *testing.T) {
 	}
 }
 
+func TestMigrationDecoderParsesOTPAuthURI(t *testing.T) {
+	t.Parallel()
+
+	uri := "otpauth://totp/gitlab-internal.wildberries.ru:gitlab-internal.wildberries.ru_nemilencev.igor%40rwb.ru?secret=YS6ZG7EEB52IOU42XIZUWRGS2W7CFPQZ&issuer=gitlab-internal.wildberries.ru"
+
+	payload, err := MigrationDecoder{}.Decode(uri)
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if len(payload.Accounts) != 1 {
+		t.Fatalf("len(Accounts) = %d, want 1", len(payload.Accounts))
+	}
+	account := payload.Accounts[0]
+	if account.Issuer != "gitlab-internal.wildberries.ru" {
+		t.Fatalf("Issuer = %q, want gitlab-internal.wildberries.ru", account.Issuer)
+	}
+	if account.Name != "gitlab-internal.wildberries.ru_nemilencev.igor@rwb.ru" {
+		t.Fatalf("Name = %q, want decoded label account name", account.Name)
+	}
+	if account.Type != AccountTypeTOTP {
+		t.Fatalf("Type = %d, want TOTP", account.Type)
+	}
+	if account.Algorithm != AlgorithmSHA1 {
+		t.Fatalf("Algorithm = %d, want SHA1", account.Algorithm)
+	}
+	if account.Digits != DigitCountSix {
+		t.Fatalf("Digits = %d, want SIX", account.Digits)
+	}
+}
+
+func TestMigrationDecoderParsesOTPAuthURIWithOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	// No issuer in query, default algorithm/digits, label issuer used.
+	uri := "otpauth://totp/GitHub:trezorg?secret=jbswy3dpehpk3pxp&algorithm=SHA256&digits=8"
+
+	payload, err := MigrationDecoder{}.Decode(uri)
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	account := payload.Accounts[0]
+	if account.Issuer != "GitHub" {
+		t.Fatalf("Issuer = %q, want GitHub from label", account.Issuer)
+	}
+	if account.Name != "trezorg" {
+		t.Fatalf("Name = %q, want trezorg", account.Name)
+	}
+	if account.Algorithm != AlgorithmSHA256 {
+		t.Fatalf("Algorithm = %d, want SHA256", account.Algorithm)
+	}
+	if account.Digits != DigitCountEight {
+		t.Fatalf("Digits = %d, want EIGHT", account.Digits)
+	}
+}
+
 func TestMigrationDecoderRejectsMalformedURIs(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
-		"otpauth://totp/GitHub:trezorg":      "otpauth-migration",
-		"otpauth-migration://offline":        "data",
-		"otpauth-migration://offline?data=!": "base64",
+		"https://example.com/GitHub:trezorg":                                                                         "otpauth",
+		"otpauth-migration://offline":                                                                                "data",
+		"otpauth-migration://offline?data=!":                                                                         "base64",
+		"otpauth://totp/GitHub:trezorg":                                                                              "secret",
+		"otpauth://totp/GitHub:trezorg?secret=not-base32!":                                                           "secret",
+		"otpauth://totp/GitHub:trezorg?secret=JBSWY3DPEHPK3PXP&algorithm=MD5":                                        "algorithm",
+		"otpauth://totp/GitHub:trezorg?secret=JBSWY3DPEHPK3PXP&digits=7":                                             "digits",
+		"otpauth://hmac/GitHub:trezorg?secret=JBSWY3DPEHPK3PXP":                                                      "type",
 		migrationURI(migrationPayload(protowire.AppendVarint(protowire.AppendTag(nil, 2, protowire.VarintType), 1))): "account",
 		migrationURI(migrationPayload(protowire.AppendVarint(protowire.AppendTag(nil, 2, protowire.VarintType), 3))): "version",
 	}

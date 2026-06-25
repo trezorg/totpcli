@@ -10,12 +10,14 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/makiuchi-d/gozxing"
 	"github.com/makiuchi-d/gozxing/qrcode"
 	"github.com/trezorg/totpcli/internal/provider"
 	"github.com/trezorg/totpcli/internal/storage"
+	"github.com/trezorg/totpcli/internal/totpsecret"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -200,10 +202,18 @@ func (MigrationDecoder) Decode(rawURI string) (MigrationPayload, error) {
 	if err != nil {
 		return MigrationPayload{}, fmt.Errorf("parse migration URI: %w", err)
 	}
-	if parsed.Scheme != "otpauth-migration" {
-		return MigrationPayload{}, fmt.Errorf("unsupported QR URI %q: expected otpauth-migration URI", parsed.Scheme)
-	}
 
+	switch parsed.Scheme {
+	case "otpauth-migration":
+		return decodeMigrationPayload(parsed)
+	case "otpauth":
+		return decodeOTPAuthURI(parsed)
+	default:
+		return MigrationPayload{}, fmt.Errorf("unsupported QR URI Schema %q: expected otpauth or otpauth-migration URI. Current URI: %q", parsed.Scheme, rawURI)
+	}
+}
+
+func decodeMigrationPayload(parsed *url.URL) (MigrationPayload, error) {
 	data := parsed.Query().Get("data")
 	if data == "" {
 		return MigrationPayload{}, errors.New("migration URI data parameter is required")
@@ -224,6 +234,107 @@ func (MigrationDecoder) Decode(rawURI string) (MigrationPayload, error) {
 		return MigrationPayload{}, errors.New("migration payload account list is empty")
 	}
 	return payload, nil
+}
+
+// decodeOTPAuthURI parses a single-account otpauth:// Key URI, as defined by
+// https://github.com/google/google-authenticator/wiki/Key-Uri-Formats.
+func decodeOTPAuthURI(parsed *url.URL) (MigrationPayload, error) {
+	accountType, err := parseOTPAuthType(parsed.Host)
+	if err != nil {
+		return MigrationPayload{}, err
+	}
+
+	labelIssuer, accountName := parseOTPAuthLabel(strings.TrimPrefix(parsed.Path, "/"))
+
+	query := parsed.Query()
+
+	secret := strings.TrimSpace(query.Get("secret"))
+	if secret == "" {
+		return MigrationPayload{}, errors.New("otpauth URI secret parameter is required")
+	}
+	secretBytes, err := totpsecret.DecodeBase32(secret)
+	if err != nil {
+		return MigrationPayload{}, fmt.Errorf("otpauth URI secret: %w", err)
+	}
+
+	issuer := strings.TrimSpace(query.Get("issuer"))
+	if issuer == "" {
+		issuer = labelIssuer
+	}
+
+	algorithm, err := parseOTPAuthAlgorithm(query.Get("algorithm"))
+	if err != nil {
+		return MigrationPayload{}, err
+	}
+	digits, err := parseOTPAuthDigits(query.Get("digits"))
+	if err != nil {
+		return MigrationPayload{}, err
+	}
+
+	return MigrationPayload{
+		Accounts: []Account{{
+			Secret:    secretBytes,
+			Name:      accountName,
+			Issuer:    issuer,
+			Algorithm: algorithm,
+			Digits:    digits,
+			Type:      accountType,
+		}},
+		Version: 1,
+	}, nil
+}
+
+func parseOTPAuthType(host string) (AccountType, error) {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "", "totp":
+		return AccountTypeTOTP, nil
+	case "hotp":
+		return AccountTypeHOTP, nil
+	default:
+		return 0, fmt.Errorf("unsupported otpauth URI type %q: expected totp or hotp", host)
+	}
+}
+
+// parseOTPAuthLabel splits the otpauth label into issuer and account name.
+// Format: "issuer:accountname" or just "accountname" (issuer optional).
+func parseOTPAuthLabel(label string) (issuer, account string) {
+	label = strings.TrimSpace(label)
+	var found bool
+	issuer, account, found = strings.Cut(label, ":")
+	if !found {
+		return "", label
+	}
+	issuer = strings.TrimSpace(issuer)
+	account = strings.TrimSpace(account)
+	return issuer, account
+}
+
+func parseOTPAuthAlgorithm(value string) (AccountAlgorithm, error) {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "", "SHA1":
+		return AlgorithmSHA1, nil
+	case "SHA256":
+		return AlgorithmSHA256, nil
+	case "SHA512":
+		return AlgorithmSHA512, nil
+	default:
+		return 0, fmt.Errorf("unsupported otpauth URI algorithm %q: expected SHA1, SHA256, or SHA512", value)
+	}
+}
+
+func parseOTPAuthDigits(value string) (DigitCount, error) {
+	switch strings.TrimSpace(value) {
+	case "", "6":
+		return DigitCountSix, nil
+	case "8":
+		return DigitCountEight, nil
+	default:
+		digits, err := strconv.Atoi(value)
+		if err != nil {
+			return 0, fmt.Errorf("unsupported otpauth URI digits %q: expected 6 or 8", value)
+		}
+		return 0, fmt.Errorf("unsupported otpauth URI digits %d: expected 6 or 8", digits)
+	}
 }
 
 type ProviderConverter struct{}
