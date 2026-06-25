@@ -162,12 +162,11 @@ Environment variables:
 		Short: "Import Google Authenticator export QR providers into SQLite storage",
 		Long: `Import Google Authenticator export QR providers into SQLite storage.
 
-When --totp is omitted, the database path is derived from the QR image filename
-by replacing its extension with .sqlite. Duplicate providers are overridden.`,
+When --totp is omitted, show reads the default provider database path.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			effectivePath := effectiveString(cmd, "totp", importOpts.path, "TOTPCLI_TOTP_PATH")
-			dbPath, err := storage.ResolveDatabasePath(effectivePath, args[0], a.Home)
+			dbPath, err := storage.ResolveDatabasePath(effectivePath, filepath.Join("~", "totp.sqlite"), a.Home)
 			if err != nil {
 				exitCode = 2
 				return err
@@ -293,12 +292,11 @@ secret selector matches exactly one stored provider.`,
 		Long: `Import JSON, YAML, or TOML provider files into SQLite storage.
 
 When --format is omitted, each input file format is detected from its extension.
-When --totp is omitted, the database path is derived from the first input file by
-replacing its extension with .sqlite. Duplicate providers are overridden.`,
+When --totp is omitted, show reads the default provider database path.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			effectivePath := effectiveString(cmd, "totp", importFileOpts.path, "TOTPCLI_TOTP_PATH")
-			dbPath, err := storage.ResolveDatabasePath(effectivePath, args[0], a.Home)
+			dbPath, err := storage.ResolveDatabasePath(effectivePath, filepath.Join("~", "totp.sqlite"), a.Home)
 			if err != nil {
 				exitCode = 1
 				return err
