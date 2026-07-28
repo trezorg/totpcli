@@ -716,14 +716,16 @@ func TestRunImportConvertsNonSQLiteOutputPath(t *testing.T) {
 	assertProviderLabels(t, loadProviderDatabase(t, dbPath), []string{"GitHub/trezorg"})
 }
 
-func TestRunImportDefaultsToImageSQLitePath(t *testing.T) {
+func TestRunImportDefaultsToHomeDatabasePath(t *testing.T) {
+	home := t.TempDir()
 	imagePath := filepath.Join(t.TempDir(), "export.png")
-	dbPath := strings.TrimSuffix(imagePath, ".png") + ".sqlite"
+	dbPath := filepath.Join(home, "totp.sqlite")
+	t.Setenv("TOTPCLI_TOTP_PATH", "")
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	app := App{
-		Home:            t.TempDir(),
+		Home:            home,
 		Stdout:          &stdout,
 		Stderr:          &stderr,
 		ImportQRDecoder: testutil.StubQRDecoder{URI: testMigrationURI([]byte("hello"), "trezorg", "GitHub")},
@@ -809,13 +811,15 @@ func TestRunImportFileImportsProviderFiles(t *testing.T) {
 	assertProviderLabels(t, loadProviderDatabase(t, outputPath), []string{"GitHub/trezorg", "AWS/root"})
 }
 
-func TestRunImportFileDerivesDatabasePathFromFirstFile(t *testing.T) {
+func TestRunImportFileDefaultsToHomeDatabasePath(t *testing.T) {
+	home := t.TempDir()
 	dir := t.TempDir()
 	inputPath := writeImportFile(t, dir, "providers.json", singleProviderJSON())
-	dbPath := filepath.Join(dir, "providers.sqlite")
+	dbPath := filepath.Join(home, "totp.sqlite")
+	t.Setenv("TOTPCLI_TOTP_PATH", "")
 
 	var stderr bytes.Buffer
-	app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+	app := App{Home: home, Stdout: &bytes.Buffer{}, Stderr: &stderr}
 
 	code := app.Run([]string{"import-file", inputPath})
 	if code != 0 {
@@ -1340,11 +1344,13 @@ func TestRunSubcommandHelpListsRelevantFlags(t *testing.T) {
 			"qr-image",
 			"--totp",
 			"SQLite",
+			"~/totp.sqlite",
 		},
 		"import-file": {
 			"provider-file",
 			"--totp",
 			"--format",
+			"~/totp.sqlite",
 		},
 		"show": {
 			"SQLite",

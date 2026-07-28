@@ -63,7 +63,7 @@ totpcli import ~/export.png --totp ~/totp.sqlite
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--totp` | derived from QR filename | Output database path |
+| `--totp` | `~/totp.sqlite` | Output database path |
 
 ### Import File (`totpcli import-file`)
 
@@ -73,7 +73,7 @@ totpcli import-file ~/totp.json --totp ~/totp.sqlite
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--totp` | derived from first filename | Output database path |
+| `--totp` | `~/totp.sqlite` | Output database path |
 | `--format` | detected from extension | `json`, `yaml`, or `toml` |
 
 ### Show (`totpcli show`)

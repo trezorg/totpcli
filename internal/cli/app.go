@@ -162,7 +162,8 @@ Environment variables:
 		Short: "Import Google Authenticator export QR providers into SQLite storage",
 		Long: `Import Google Authenticator export QR providers into SQLite storage.
 
-When --totp is omitted, show reads the default provider database path.`,
+When --totp is omitted, providers are imported into ~/totp.sqlite. Duplicate
+providers are overridden.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			effectivePath := effectiveString(cmd, "totp", importOpts.path, "TOTPCLI_TOTP_PATH")
@@ -292,7 +293,8 @@ secret selector matches exactly one stored provider.`,
 		Long: `Import JSON, YAML, or TOML provider files into SQLite storage.
 
 When --format is omitted, each input file format is detected from its extension.
-When --totp is omitted, show reads the default provider database path.`,
+When --totp is omitted, providers are imported into ~/totp.sqlite. Duplicate
+providers are overridden.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			effectivePath := effectiveString(cmd, "totp", importFileOpts.path, "TOTPCLI_TOTP_PATH")
