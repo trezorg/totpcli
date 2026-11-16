@@ -10,6 +10,7 @@ totpcli add           Add a provider
 totpcli delete        Delete a provider
 totpcli import        Import from a Google Authenticator export QR image
 totpcli import-file   Import from JSON, YAML, or TOML provider files
+totpcli export        Export providers to a JSON, YAML, or TOML backup file
 totpcli show          Show database contents
 ```
 
@@ -76,6 +77,26 @@ totpcli import-file ~/totp.json --totp ~/totp.sqlite
 | `--totp` | `~/totp.sqlite` | Output database path |
 | `--format` | detected from extension | `json`, `yaml`, or `toml` |
 
+### Export (`totpcli export`)
+
+```sh
+totpcli export --output ~/totp-backup.json
+totpcli import-file ~/totp-backup.json   # restore into a database
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--totp` | `~/totp.sqlite` | Source database path |
+| `--output`, `-o` | `~/totp.<format>` | Output provider file path |
+| `--format` | detected from `--output` extension | `json`, `yaml`, or `toml` |
+| `--force` | `false` | Overwrite an existing output file |
+
+Export writes the provider file formats documented below and refuses to
+replace an existing file unless `--force` is set. The file is created with
+`0600` permissions because it contains cleartext TOTP secrets.
+The source database must already exist. If it is missing, export fails without
+creating a database or changing the output file, even with `--force`.
+
 ### Show (`totpcli show`)
 
 ```sh
@@ -103,7 +124,7 @@ Flags take precedence over environment variables, which take precedence over def
 
 The database is created automatically with `0600` permissions. The `providers` table stores: `secret`, `name`, `issuer`, `algorithm`, `digits` (integer), `type`, `totp_secret`, `totp_secret_key` (canonical form for deduplication), plus `id`, `created_at`, and `updated_at`.
 
-The database stores TOTP seeds in cleartext. Protect the file like password material: keep it on a trusted local disk, restrict backups and sync targets, and do not share `show --reveal-secrets` output.
+The database stores TOTP seeds in cleartext. Protect the file like password material: keep it on a trusted local disk, restrict backups and sync targets, and do not share `show --reveal-secrets` output. Export files contain the same cleartext secrets: `totpcli export` writes them with `0600` permissions, and they must be protected like the database itself.
 
 Duplicates are matched by trimmed issuer, trimmed name, and normalized `totp_secret_key`. Existing records are overwritten with imported values.
 

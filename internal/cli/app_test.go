@@ -979,6 +979,254 @@ func TestRunShowRejectsUnsupportedFormatBeforeLoadingDatabase(t *testing.T) {
 	}
 }
 
+func TestRunExportSubcommandWritesProviderFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	outPath := filepath.Join(t.TempDir(), "backup.json")
+	seedProviderDatabase(t, path, []provider.RawProvider{{
+		Secret:     "metadata",
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Algorithm:  "SHA512",
+		Digits:     "EIGHT",
+		Type:       "TOTP",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	}})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"export", "--totp", path, "--output", outPath})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "exported 1 providers to "+outPath) || !strings.Contains(stdout.String(), "format=json") {
+		t.Fatalf("stdout = %q, want export summary with path and format", stdout.String())
+	}
+	raw, err := provider.LoadRaw(outPath, provider.FormatJSON)
+	if err != nil {
+		t.Fatalf("LoadRaw returned error: %v", err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("len(raw) = %d, want 1", len(raw))
+	}
+	want := provider.RawProvider{Secret: "metadata", Name: "trezorg", Issuer: "GitHub", Algorithm: "SHA512", Digits: "EIGHT", Type: "TOTP", TOTPSecret: "JBSWY3DPEHPK3PXP"}
+	if raw[0] != want {
+		t.Fatalf("raw[0] = %#v, want %#v", raw[0], want)
+	}
+	if mode := exportOutputMode(t, outPath); mode != 0o600 {
+		t.Fatalf("mode = %o, want 600", mode)
+	}
+}
+
+func TestRunExportRefusesExistingOutputWithoutForce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	outPath := filepath.Join(t.TempDir(), "backup.json")
+	seedProviderDatabase(t, path, []provider.RawProvider{{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Type:       "TOTP",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	}})
+	if err := os.WriteFile(outPath, []byte("precious"), 0o644); err != nil {
+		t.Fatalf("write existing output: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"export", "--totp", path, "--output", outPath})
+	if code != 1 {
+		t.Fatalf("Run exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "--force") {
+		t.Fatalf("stderr = %q, want --force hint", stderr.String())
+	}
+	if data, err := os.ReadFile(outPath); err != nil || string(data) != "precious" {
+		t.Fatalf("output content = %q err = %v, want unchanged precious", data, err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = app.Run([]string{"export", "--totp", path, "--output", outPath, "--force"})
+	if code != 0 {
+		t.Fatalf("forced Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	raw, err := provider.LoadRaw(outPath, provider.FormatJSON)
+	if err != nil || len(raw) != 1 {
+		t.Fatalf("forced LoadRaw = %#v err = %v, want 1 provider", raw, err)
+	}
+	if mode := exportOutputMode(t, outPath); mode != 0o600 {
+		t.Fatalf("forced mode = %o, want 600", mode)
+	}
+}
+
+func TestRunExportDefaultsToHomeJSONPath(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	seedProviderDatabase(t, path, []provider.RawProvider{{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Type:       "TOTP",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	}})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: home, Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"export", "--totp", path})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	wantPath := filepath.Join(home, "totp.json")
+	if !strings.Contains(stdout.String(), wantPath) {
+		t.Fatalf("stdout = %q, want default output path %q", stdout.String(), wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("default output missing: %v", err)
+	}
+}
+
+func TestRunExportExplicitFormatWinsOverExtension(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	outPath := filepath.Join(t.TempDir(), "backup.json")
+	seedProviderDatabase(t, path, []provider.RawProvider{{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Type:       "TOTP",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	}})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"export", "--totp", path, "--output", outPath, "--format", "yaml"})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "format=yaml") {
+		t.Fatalf("stdout = %q, want format=yaml", stdout.String())
+	}
+	if _, err := provider.LoadRaw(outPath, provider.FormatYAML); err != nil {
+		t.Fatalf("LoadRaw yaml returned error: %v", err)
+	}
+}
+
+func TestRunExportEmptyDatabaseWritesEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.sqlite")
+	seedProviderDatabase(t, path, nil)
+	outPath := filepath.Join(t.TempDir(), "backup.json")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"export", "--totp", path, "--output", outPath})
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	raw, err := provider.LoadRaw(outPath, provider.FormatJSON)
+	if err != nil || len(raw) != 0 {
+		t.Fatalf("LoadRaw = %#v err = %v, want zero providers", raw, err)
+	}
+	if !strings.Contains(stdout.String(), "exported 0 providers") {
+		t.Fatalf("stdout = %q, want zero-provider summary", stdout.String())
+	}
+}
+
+func TestRunExportRejectsMissingSource(t *testing.T) {
+	for _, source := range []string{"flag", "env", "default"} {
+		for _, force := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/force=%t", source, force), func(t *testing.T) {
+				home := t.TempDir()
+				path := filepath.Join(home, "totp.sqlite")
+				outPath := filepath.Join(home, "backup.json")
+				args := []string{"export", "--output", outPath}
+				t.Setenv("TOTPCLI_TOTP_PATH", "")
+				switch source {
+				case "flag":
+					path = filepath.Join(home, "missing.sqlite")
+					args = append(args, "--totp", path)
+				case "env":
+					path = filepath.Join(home, "missing.sqlite")
+					t.Setenv("TOTPCLI_TOTP_PATH", path)
+				}
+				const backup = `[{"name":"existing backup","totpSecret":"JBSWY3DPEHPK3PXP"}]`
+				if force {
+					if err := os.WriteFile(outPath, []byte(backup), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					args = append(args, "--force")
+				}
+
+				var stdout, stderr bytes.Buffer
+				app := App{Home: home, Stdout: &stdout, Stderr: &stderr}
+				if code := app.Run(args); code != 1 {
+					t.Errorf("Run exit code = %d, want 1; stderr = %q", code, stderr.String())
+				}
+				if stdout.Len() != 0 {
+					t.Errorf("stdout = %q, want no success summary", stdout.String())
+				}
+				if !strings.Contains(stderr.String(), path) {
+					t.Errorf("stderr = %q, want source path %q", stderr.String(), path)
+				}
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("source database was created: stat error = %v", err)
+				}
+				if force {
+					data, err := os.ReadFile(outPath)
+					if err != nil || string(data) != backup {
+						t.Errorf("backup = %q, err = %v; want unchanged backup", data, err)
+					}
+				} else if _, err := os.Stat(outPath); !os.IsNotExist(err) {
+					t.Errorf("output was created: stat error = %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRunExportRejectsUnsupportedFormatBeforeOpeningDatabase(t *testing.T) {
+	t.Parallel()
+
+	var stderr bytes.Buffer
+	app := App{
+		Home:   t.TempDir(),
+		Stdout: &bytes.Buffer{},
+		Stderr: &stderr,
+		NewRepository: func(string) (providerRepository, error) {
+			t.Fatal("NewRepository called before export format validation")
+			return nil, nil
+		},
+	}
+
+	code := app.Run([]string{"export", "--totp", filepath.Join(t.TempDir(), "missing.sqlite"), "--format", "xml"})
+	if code != 2 {
+		t.Fatalf("Run exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "unsupported format") {
+		t.Fatalf("stderr = %q, want unsupported format error", stderr.String())
+	}
+}
+
+func TestRunExportRejectsUnsupportedFlags(t *testing.T) {
+	t.Parallel()
+
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &stderr}
+
+	code := app.Run([]string{"export", "--totp", filepath.Join(t.TempDir(), "providers.sqlite"), "--search", "git"})
+	if code == 0 {
+		t.Fatal("Run exit code = 0, want non-zero for unsupported flag")
+	}
+	if !strings.Contains(stderr.String(), "unknown flag") {
+		t.Fatalf("stderr = %q, want unknown flag error", stderr.String())
+	}
+}
+
 func TestRunImportReportsUsageAndImportErrors(t *testing.T) {
 	t.Parallel()
 
@@ -1815,6 +2063,107 @@ func assertLaunchedLabels(t *testing.T, model tui.Model, want []string) {
 			t.Fatalf("filtered[%d] = %q, want %q", i, got, want[i])
 		}
 	}
+}
+
+func TestRunExportImportFileRoundTrip(t *testing.T) {
+	sourceDB := filepath.Join(t.TempDir(), "source.sqlite")
+	targetDB := filepath.Join(t.TempDir(), "target.sqlite")
+	backupPath := filepath.Join(t.TempDir(), "backup.yaml")
+	seedProviderDatabase(t, sourceDB, []provider.RawProvider{
+		{Name: "trezorg", Issuer: "GitHub", Algorithm: "SHA1", Digits: "SIX", Type: "TOTP", TOTPSecret: "JBSWY3DPEHPK3PXP"},
+		{Secret: "metadata", Name: "ops", Issuer: "GitHub", Algorithm: "SHA512", Digits: "EIGHT", Type: "TOTP", TOTPSecret: "JBSWY3DPEHPK3PXQ"},
+		{Name: "deploy", Issuer: "GitLab", Algorithm: "SHA1", Digits: "SIX", Type: "TOTP", TOTPSecret: "JBSWY3DPEHPK3PXA"},
+		{Name: "deploy", Issuer: "GitLab", Algorithm: "SHA256", Digits: "SIX", Type: "TOTP", TOTPSecret: "JBSWY3DPEHPK3PXB"},
+	})
+
+	app := App{Home: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+
+	if code := app.Run([]string{"export", "--totp", sourceDB, "--output", backupPath}); code != 0 {
+		t.Fatalf("export exit code = %d, want 0", code)
+	}
+	if code := app.Run([]string{"import-file", backupPath, "--totp", targetDB}); code != 0 {
+		t.Fatalf("import-file exit code = %d, want 0", code)
+	}
+
+	source := indexProviders(loadProviderDatabase(t, sourceDB))
+	target := indexProviders(loadProviderDatabase(t, targetDB))
+	if len(source) != 4 || len(target) != 4 {
+		t.Fatalf("providers = %d/%d, want 4/4: %v / %v", len(source), len(target), source, target)
+	}
+	for key, want := range source {
+		got, ok := target[key]
+		if !ok {
+			t.Fatalf("round trip lost provider %q: %v", key, target)
+		}
+		if got != want {
+			t.Fatalf("round trip changed provider %q: got %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+func indexProviders(providers []provider.Provider) map[string]provider.Provider {
+	indexed := make(map[string]provider.Provider, len(providers))
+	for _, stored := range providers {
+		indexed[stored.DisplayLabel()+"|"+stored.TOTPSecret] = stored
+	}
+	return indexed
+}
+
+func TestRunExportRejectsOutputMatchingSourceDatabase(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "totp.sqlite")
+	seedProviderDatabase(t, dbPath, []provider.RawProvider{{
+		Name:       "trezorg",
+		Issuer:     "GitHub",
+		Type:       "TOTP",
+		TOTPSecret: "JBSWY3DPEHPK3PXP",
+	}})
+	before, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read source database: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Home: t.TempDir(), Stdout: &stdout, Stderr: &stderr}
+
+	code := app.Run([]string{"export", "--totp", dbPath, "--output", dbPath, "--force"})
+	if code != 2 {
+		t.Fatalf("Run exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "must differ from the provider database") {
+		t.Fatalf("stderr = %q, want source/output mismatch error", stderr.String())
+	}
+	if after, err := os.ReadFile(dbPath); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("source database modified: equal=%v err=%v", bytes.Equal(before, after), err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	alias := filepath.Join(dir, "alias.json")
+	if err := os.Link(dbPath, alias); err != nil {
+		t.Fatalf("hard-link source database: %v", err)
+	}
+	code = app.Run([]string{"export", "--totp", dbPath, "--output", alias, "--force"})
+	if code != 2 {
+		t.Fatalf("alias Run exit code = %d, want 2", code)
+	}
+	if after, err := os.ReadFile(dbPath); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("source database modified via alias: equal=%v err=%v", bytes.Equal(before, after), err)
+	}
+	if data, err := os.ReadFile(alias); err != nil || !bytes.Equal(before, data) {
+		t.Fatalf("alias content = source db bytes equal=%v err=%v; want untouched hard link", bytes.Equal(before, data), err)
+	}
+}
+
+func exportOutputMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat export output %q: %v", path, err)
+	}
+	return info.Mode().Perm()
 }
 
 func assertProviderLabels(t *testing.T, providers []provider.Provider, want []string) {

@@ -3,7 +3,7 @@
 Define command parsing, environment variable configuration, precedence, and help behavior for the `totpcli` command.
 ## Requirements
 ### Requirement: Cobra command parsing
-The CLI SHALL parse commands and flags through a Cobra root command named `totpcli`. The CLI SHALL preserve root invocation as the default TOTP display behavior, SHALL expose a `totp` subcommand for the same behavior, SHALL expose `--totp`, `--search`, `--search-engine`, and `--no-tui` flags for TOTP display behavior, SHALL expose an `add` subcommand for direct TOTP provider creation behavior, SHALL expose a `delete` subcommand for direct TOTP provider deletion behavior, SHALL expose an `import` subcommand for Google Authenticator QR provider import behavior, SHALL expose an `import-file` subcommand for provider file import behavior, and SHALL expose a `show` subcommand for SQLite table inspection behavior. The CLI SHALL expose `--format` only on subcommands that define format-specific behavior, including `import-file` and `show`. The CLI SHALL NOT expose `--format` on root invocation, the `totp` subcommand, the `add` subcommand, the `delete` subcommand, or the `import` subcommand.
+The CLI SHALL parse commands and flags through a Cobra root command named `totpcli`. The CLI SHALL preserve root invocation as the default TOTP display behavior, SHALL expose a `totp` subcommand for the same behavior, SHALL expose `--totp`, `--search`, `--search-engine`, and `--no-tui` flags for TOTP display behavior, SHALL expose an `add` subcommand for direct TOTP provider creation behavior, SHALL expose a `delete` subcommand for direct TOTP provider deletion behavior, SHALL expose an `import` subcommand for Google Authenticator QR provider import behavior, SHALL expose an `import-file` subcommand for provider file import behavior, SHALL expose a `show` subcommand for SQLite table inspection behavior, and SHALL expose an `export` subcommand for provider file export behavior. The CLI SHALL expose `--format` only on subcommands that define format-specific behavior, including `import-file`, `show`, and `export`. The CLI SHALL NOT expose `--format` on root invocation, the `totp` subcommand, the `add` subcommand, the `delete` subcommand, or the `import` subcommand.
 
 #### Scenario: Existing TOTP flags still launch the TUI
 - **WHEN** the user starts the application with `--totp /tmp/providers.sqlite --search git`
@@ -49,6 +49,10 @@ The CLI SHALL parse commands and flags through a Cobra root command named `totpc
 - **WHEN** the user starts the application with `show --format json --totp /tmp/providers.sqlite`
 - **THEN** the CLI outputs SQLite table data from `/tmp/providers.sqlite` as JSON
 
+#### Scenario: Export subcommand routes provider export behavior
+- **WHEN** the user starts the application with `export --output /tmp/backup.json --totp /tmp/providers.sqlite`
+- **THEN** the CLI writes providers from `/tmp/providers.sqlite` to `/tmp/backup.json`
+
 #### Scenario: Format flag is rejected on TOTP workflow
 - **WHEN** the user starts the application with `totp --format json`
 - **THEN** the CLI reports a command usage error and exits with a non-zero usage status
@@ -63,7 +67,7 @@ The CLI SHALL parse commands and flags through a Cobra root command named `totpc
 
 #### Scenario: Unknown flag reports a usage error
 - **WHEN** the user starts the application with an unsupported flag
-- **THEN** the CLI reports a command usage error and exits with a non-zero usage status
+- **THEN** the CLI reports a usage error and exits with a non-zero usage status
 
 ### Requirement: Environment variable configuration
 The CLI SHALL support `TOTPCLI_TOTP_PATH`, `TOTPCLI_SEARCH`, `TOTPCLI_SEARCH_ENGINE`, and `TOTPCLI_NO_TUI` as environment variable fallbacks for provider database path, initial search text, provider search engine, and non-interactive mode. The CLI SHALL NOT support `TOTPCLI_FORMAT` for root invocation, the `totp` subcommand, or the `import` subcommand.
@@ -120,7 +124,7 @@ The CLI SHALL provide Cobra-generated help output that documents available comma
 
 #### Scenario: Help output lists supported commands
 - **WHEN** the user starts the application with `--help`
-- **THEN** the CLI prints help output that includes the `totp`, `add`, `delete`, `import`, `import-file`, and `show` commands
+- **THEN** the CLI prints help output that includes the `totp`, `add`, `delete`, `import`, `import-file`, `show`, and `export` commands
 
 #### Scenario: Help output lists supported TOTP flags
 - **WHEN** the user starts the application with `--help`
@@ -152,6 +156,10 @@ The CLI SHALL provide Cobra-generated help output that documents available comma
 #### Scenario: Show subcommand help lists show options
 - **WHEN** the user starts the application with `show --help`
 - **THEN** the CLI prints help output that includes SQLite table inspection behavior, `--totp`, and `--format`
+
+#### Scenario: Export subcommand help lists export options
+- **WHEN** the user starts the application with `export --help`
+- **THEN** the CLI prints help output that includes provider export behavior, `--totp`, `--output`, `--format`, and `--force`, including restore guidance through `import-file`
 
 #### Scenario: Help output lists environment variables
 - **WHEN** the user starts the application with `--help`

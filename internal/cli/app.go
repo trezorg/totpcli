@@ -96,6 +96,13 @@ type deleteOptions struct {
 	totpSecret string
 }
 
+type exportOptions struct {
+	path   string
+	output string
+	format string
+	force  bool
+}
+
 type providerRepository interface {
 	Init() error
 	ListProviders() ([]provider.Provider, error)
@@ -125,6 +132,7 @@ func (a App) Run(args []string) int {
 		format        showFormat
 		revealSecrets bool
 	}{format: showFormatTable}
+	exportOpts := exportOptions{}
 	exitCode := 0
 	runTOTP := func(cmd *cobra.Command, _ []string) error {
 		code, err := a.runTOTP(cmd, stdout, totpOpts)
@@ -363,7 +371,71 @@ When --totp is omitted, show reads the default provider database path.`,
 	showCmd.Flags().Var(&showOpts.format, "format", "Show output format: table, json, yaml, or toml")
 	showCmd.Flags().BoolVar(&showOpts.revealSecrets, "reveal-secrets", false, "Reveal secret values in show output")
 
-	cmd.AddCommand(totpCmd, addCmd, deleteCmd, importCmd, importFileCmd, showCmd)
+	exportCmd := &cobra.Command{
+		Use:   "export",
+		Short: "Export SQLite providers into a provider file backup",
+		Long: `Export SQLite providers into a JSON, YAML, or TOML provider file backup.
+
+Restore a backup with the import-file command. The output file contains
+cleartext TOTP secrets and is written with 0600 permissions; an existing
+output file is only replaced when --force is set.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolved, err := provider.ResolveOptions(provider.Options{
+				Path:   exportOpts.output,
+				Format: exportOpts.format,
+				Home:   a.Home,
+			})
+			if err != nil {
+				exitCode = 2
+				return err
+			}
+			effectivePath := effectiveString(cmd, "totp", exportOpts.path, "TOTPCLI_TOTP_PATH")
+			dbPath, err := storage.ResolveDatabasePath(effectivePath, filepath.Join("~", "totp.sqlite"), a.Home)
+			if err != nil {
+				exitCode = 2
+				return err
+			}
+			if err := ensureExportOutputDistinct(dbPath, resolved.Path); err != nil {
+				exitCode = 2
+				return err
+			}
+			if _, err := os.Stat(dbPath); err != nil {
+				exitCode = 1
+				return fmt.Errorf("stat export source database: %w", err)
+			}
+			repo, err := a.openRepository(dbPath)
+			if err != nil {
+				exitCode = 1
+				return err
+			}
+			defer func() {
+				_ = repo.Close()
+			}()
+			providers, err := repo.ListProviders()
+			if err != nil {
+				exitCode = 1
+				return err
+			}
+			raws := make([]provider.RawProvider, 0, len(providers))
+			for _, stored := range providers {
+				raws = append(raws, stored.ToRaw())
+			}
+			if err := provider.Save(resolved.Path, resolved.Format, raws, exportOpts.force); err != nil {
+				exitCode = 1
+				if errors.Is(err, provider.ErrFileExists) {
+					return fmt.Errorf("%w (use --force to overwrite)", err)
+				}
+				return err
+			}
+			return printExportResult(stdout, len(raws), resolved.Path, resolved.Format)
+		},
+	}
+	exportCmd.Flags().StringVar(&exportOpts.path, "totp", "", "SQLite provider database path (env TOTPCLI_TOTP_PATH)")
+	exportCmd.Flags().StringVarP(&exportOpts.output, "output", "o", "", "Output provider file path (default ~/totp.<format>)")
+	exportCmd.Flags().StringVar(&exportOpts.format, "format", "", "Provider file format: json, yaml, or toml")
+	exportCmd.Flags().BoolVar(&exportOpts.force, "force", false, "Overwrite an existing output file")
+
+	cmd.AddCommand(totpCmd, addCmd, deleteCmd, importCmd, importFileCmd, showCmd, exportCmd)
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
@@ -467,6 +539,31 @@ func printImportResult(output io.Writer, result storage.ImportResult) error {
 	_, err := fmt.Fprintf(output, "imported providers into %s: imported=%d added=%d overridden=%d final=%d\n",
 		result.OutputPath, result.Imported, result.Added, result.Overridden, result.Final)
 	return err
+}
+
+func printExportResult(output io.Writer, count int, path string, format provider.Format) error {
+	_, err := fmt.Fprintf(output, "exported %d providers to %s (format=%s)\n", count, path, format)
+	return err
+}
+
+func ensureExportOutputDistinct(dbPath string, outputPath string) error {
+	absDB, err := filepath.Abs(dbPath)
+	if err != nil {
+		return fmt.Errorf("resolve database path %q: %w", dbPath, err)
+	}
+	absOut, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("resolve output path %q: %w", outputPath, err)
+	}
+	if absDB == absOut {
+		return errors.New("output path must differ from the provider database")
+	}
+	dbInfo, dbErr := os.Stat(dbPath)
+	outInfo, outErr := os.Stat(outputPath)
+	if dbErr == nil && outErr == nil && os.SameFile(dbInfo, outInfo) {
+		return errors.New("output path must differ from the provider database")
+	}
+	return nil
 }
 
 func validateAddProvider(raw provider.RawProvider) error {

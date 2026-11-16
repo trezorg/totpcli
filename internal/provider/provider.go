@@ -20,6 +20,8 @@ var (
 	ErrUnsupportedType = errors.New("unsupported type")
 	// ErrUnsupportedAlgorithm indicates the algorithm is not SHA1, SHA256, or SHA512.
 	ErrUnsupportedAlgorithm = errors.New("unsupported algorithm")
+	// ErrFileExists indicates the output file already exists and overwrite was not requested.
+	ErrFileExists = errors.New("output file already exists")
 )
 
 type Format string
@@ -179,6 +181,123 @@ func ParseRaw(data []byte, format Format) ([]RawProvider, error) {
 		return nil, fmt.Errorf("unsupported provider format %q", format)
 	}
 	return raw, nil
+}
+
+// Encode serializes providers into a provider file document for the given
+// format, symmetric with ParseRaw. A nil slice encodes as a parseable empty
+// document.
+func Encode(providers []RawProvider, format Format) ([]byte, error) {
+	if providers == nil {
+		providers = []RawProvider{}
+	}
+	switch format {
+	case FormatJSON:
+		data, err := json.MarshalIndent(providers, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("encode json provider file: %w", err)
+		}
+		return data, nil
+	case FormatYAML:
+		data, err := yaml.Marshal(providers)
+		if err != nil {
+			return nil, fmt.Errorf("encode yaml provider file: %w", err)
+		}
+		return data, nil
+	case FormatTOML:
+		doc := struct {
+			Providers []RawProvider `toml:"providers"`
+		}{Providers: providers}
+		data, err := toml.Marshal(doc)
+		if err != nil {
+			return nil, fmt.Errorf("encode toml provider file: %w", err)
+		}
+		return data, nil
+	default:
+		return nil, fmt.Errorf("unsupported provider format %q", format)
+	}
+}
+
+// Save encodes providers and writes them to path. Provider files contain
+// cleartext TOTP secrets, so the file is always created with 0600 permissions.
+// An existing file is refused unless overwrite is set; the refusal is atomic,
+// dangling symlinks are never followed, and a forced overwrite replaces the
+// destination atomically via a private temporary file in the same directory,
+// so secret content is never exposed under the destination's old permissions.
+func Save(path string, format Format, providers []RawProvider, overwrite bool) error {
+	data, err := Encode(providers, format)
+	if err != nil {
+		return err
+	}
+	if overwrite {
+		return replaceOutputFile(path, data)
+	}
+	return createOutputFile(path, data)
+}
+
+// createOutputFile writes a new output file. O_EXCL makes creation fail when
+// path already exists — including as a symlink — so concurrent savers cannot
+// both observe an absent file and both write it.
+func createOutputFile(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("output file %q: %w", path, ErrFileExists)
+		}
+		return fmt.Errorf("create output file %q: %w", path, err)
+	}
+	return writeAndClose(file, path, data)
+}
+
+// replaceOutputFile atomically replaces an existing output file. The payload
+// is written to a 0600 temporary file in the destination directory and renamed
+// over the destination, so readers of the old file keep the old content and the
+// new content never exists at the destination path with looser permissions.
+// Renaming over a symlink replaces the link itself instead of writing through
+// it to an unrelated target.
+func replaceOutputFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".totpcli-export-*")
+	if err != nil {
+		return fmt.Errorf("create temporary output near %q: %w", path, err)
+	}
+	tmpPath := tmp.Name()
+	if err := writeAndClose(tmp, tmpPath, data); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("replace output file %q: %w", path, err)
+	}
+	return nil
+}
+
+func writeAndClose(file *os.File, path string, data []byte) error {
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write output file %q: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close output file %q: %w", path, err)
+	}
+	return nil
+}
+
+// ToRaw converts a stored provider into its provider file record shape.
+// Digit counts map to the SIX and EIGHT words used by provider file examples.
+func (p Provider) ToRaw() RawProvider {
+	digits := "SIX"
+	if p.Digits == 8 {
+		digits = "EIGHT"
+	}
+	return RawProvider{
+		Secret:     p.Secret,
+		Name:       p.Name,
+		Issuer:     p.Issuer,
+		Algorithm:  string(p.Algorithm),
+		Digits:     digits,
+		Type:       p.Type,
+		TOTPSecret: p.TOTPSecret,
+	}
 }
 
 func Normalize(raw RawProvider) (Provider, error) {
