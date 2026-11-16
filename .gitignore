@@ -4,6 +4,7 @@
 .codex
 !.claude/settings.json
 !.claude/settings.local.json
+/build
 /coverage*.*
 /docs
 /totpcli

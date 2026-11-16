@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      - name: Set up mise
+        uses: jdx/mise-action@v5
+        with:
+          cache: false
+
+      - name: Lint
+        run: mise run lint:ci
+
+      - name: Test with coverage
+        run: mise run test:coverage
+
+      - name: Build all platforms
+        run: bash ./build.sh
+
+      - name: Generate checksums
+        run: |
+          cd build
+          sha256sum totpcli-* > checksums.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: build/*
+          generate_release_notes: true
